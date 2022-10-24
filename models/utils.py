@@ -18,7 +18,6 @@
 import functools
 from typing import Any
 
-import flax
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -28,17 +27,6 @@ import sde_lib
 from models import wideresnet_noise_conditional
 from utils import batch_mul
 
-
-# The dataclass that stores all training states
-@flax.struct.dataclass
-class OldState:
-    step: int
-    optimizer: Any
-    lr: float
-    model_state: Any
-    ema_rate: float
-    params_ema: Any
-    rng: Any
 
 class State(train_state.TrainState):
     model_state: Any

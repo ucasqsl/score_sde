@@ -58,7 +58,7 @@ def optimization_manager(config):
         #         lambda x: x * grad_clip / jnp.maximum(grad_norm, grad_clip), grad)
         # else:  # disabling gradient clipping if grad_clip < 0
         #     clipped_grad = grad
-        return state.apply_gradients
+        return state.apply_gradients(grads=grad)
 
     return optimize_fn
 
@@ -228,7 +228,7 @@ def get_step_fn(sde, model, train, optimize_fn=None, reduce_mean=False, continuo
             states = state.model_state
             (loss, new_model_state), grad = grad_fn(step_rng, params, states, batch)
             grad = jax.lax.pmean(grad, axis_name='batch')
-            new_optimizer = optimize_fn(state, grad)
+            state = optimize_fn(state, grad)
             new_params_ema = jax.tree_util.tree_map(
                 lambda p_ema, p: p_ema * state.ema_rate + p * (1. - state.ema_rate),
                 state.params_ema, state.params
