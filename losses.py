@@ -34,7 +34,11 @@ def get_optimizer(config):
     else:
         raise NotImplementedError(
             f'Optimizer {config.optim.optimizer} not supported yet!')
-    # if config.optim.grad_clip >= 0:
+    if config.optim.grad_clip >= 0:
+        optimizer = optax.chain(
+            optax.clip_by_global_norm(config.optim.grad_clip),
+            optimizer,
+        )
     #     tx.append(optax.clip_by_global_norm(config.optim.grad_clip))
     return optimizer
 
@@ -162,7 +166,7 @@ def get_ddpm_loss_fn(vpsde, model, train, reduce_mean=True):
     return loss_fn
 
 
-def get_step_fn(sde, model, train, optimize_fn=None, reduce_mean=False, continuous=True, likelihood_weighting=False):
+def get_step_fn(sde, model, train, optimize_fn=None, reduce_mean=False, continuous=True, likelihood_weighting=False, pmap=True):
     """Create a one-step training/evaluation function.
 
     Args:
@@ -190,7 +194,7 @@ def get_step_fn(sde, model, train, optimize_fn=None, reduce_mean=False, continuo
         else:
             raise ValueError(f"Discrete training for {sde.__class__.__name__} is not recommended.")
 
-    def step_fn(carry_state, batch):
+    def step_fn_pmap(carry_state, batch):
         """Running one step of training or evaluation.
 
         This function will undergo `jax.lax.scan` so that multiple steps can be pmapped and jit-compiled together
@@ -232,4 +236,46 @@ def get_step_fn(sde, model, train, optimize_fn=None, reduce_mean=False, continuo
         new_carry_state = (rng, new_state)
         return new_carry_state, loss
 
-    return step_fn
+    def step_fn(carry_state, batch):
+        """Running one step of training or evaluation.
+
+        This function will undergo `jax.lax.scan` so that multiple steps can be pmapped and jit-compiled together
+        for faster execution.
+
+        Args:
+          carry_state: A tuple (JAX random state, `flax.struct.dataclass` containing the training state).
+          batch: A mini-batch of training/evaluation data.
+
+        Returns:
+          new_carry_state: The updated tuple of `carry_state`.
+          loss: The average loss value of this state.
+        """
+
+        (rng, state) = carry_state
+        rng, step_rng = jax.random.split(rng)
+        grad_fn = jax.value_and_grad(loss_fn, argnums=1, has_aux=True)
+        if train:
+            params = state.params
+            states = state.model_state
+            (loss, new_model_state), grad = grad_fn(step_rng, params, states, batch)
+            # grad = jnp.mean(grad, axis=0)
+            state = optimize_fn(state, grad)
+            new_params_ema = jax.tree_util.tree_map(
+                lambda p_ema, p: p_ema * state.ema_rate + p * (1. - state.ema_rate),
+                state.params_ema, state.params
+            )
+            step = state.step + 1
+            new_state = state.replace(
+                step=step,
+                model_state=new_model_state,
+                params_ema=new_params_ema
+            )
+        else:
+            loss, _ = loss_fn(step_rng, state.params_ema, state.model_state, batch)
+            new_state = state
+
+        # loss = jax.np.mean(loss, axis=0)
+        new_carry_state = (rng, new_state)
+        return new_carry_state, loss
+
+    return step_fn_pmap if pmap else step_fn

@@ -315,7 +315,7 @@ class AnnealedLangevinDynamics(Corrector):
         score_fn = self.score_fn
         n_steps = self.n_steps
         target_snr = self.snr
-        if isinstance(sde, sde_lib.VPSDE) or isinstance(sde, sde_lib.subVPSDE):
+        if isinstance(sde, sde_lib.VPSDE):# or isinstance(sde, sde_lib.subVPSDE):
             timestep = (t * (sde.N - 1) / sde.T).astype(jnp.int32)
             alpha = sde.alphas[timestep]
         else:
