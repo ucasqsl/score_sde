@@ -169,7 +169,7 @@ def get_dataset(config, additional_dim=None, uniform_dequantization=False, evalu
                 img = tf.image.random_flip_left_right(img)
             if uniform_dequantization:
                 img = (tf.random.uniform(img.shape, dtype=tf.float32) + img * 255.) / 256.
-            return dict(image=img, label=None)
+            return dict(data=img, label=None)
 
     else:
         def preprocess_fn(d):
@@ -180,7 +180,7 @@ def get_dataset(config, additional_dim=None, uniform_dequantization=False, evalu
             if uniform_dequantization:
                 img = (tf.random.uniform(img.shape, dtype=tf.float32) + img * 255.) / 256.
 
-            return dict(image=img, label=d.get('label', None))
+            return dict(data=img, label=d.get('label', None))
 
     def create_dataset(dataset_builder, split):
         dataset_options = tf.data.Options()

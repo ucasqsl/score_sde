@@ -421,7 +421,7 @@ def evaluate(config,
                     eval_batch = jax.tree_util.tree_map(lambda x: scaler(x._numpy()), batch)
                     rng, *step_rng = jax.random.split(rng, jax.local_device_count() + 1)
                     step_rng = jnp.asarray(step_rng)
-                    bpd = likelihood_fn(step_rng, pstate, eval_batch['image'])[0]
+                    bpd = likelihood_fn(step_rng, pstate, eval_batch['data'])[0]
                     bpd = bpd.reshape(-1)
                     bpds.extend(bpd)
                     logging.info(
