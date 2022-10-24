@@ -42,22 +42,7 @@ def get_optimizer(config):
 def optimization_manager(config):
     """Returns an optimize_fn based on `config`."""
     def optimize_fn(state,
-                    grad,
-                    warmup=config.optim.warmup,
-                    grad_clip=config.optim.grad_clip):
-        """Optimizes with warmup and gradient clipping (disabled if negative)."""
-        # lr = state.lr
-        # if warmup > 0:
-        #     lr = lr * jnp.minimum(state.step / warmup, 1.0)
-        # if grad_clip >= 0:
-        #     # Compute global gradient norm
-        #     grad_norm = jnp.sqrt(
-        #         sum([jnp.sum(jnp.square(x)) for x in jax.tree_leaves(grad)]))
-        #     # Clip gradient
-        #     clipped_grad = jax.tree_util.tree_map(
-        #         lambda x: x * grad_clip / jnp.maximum(grad_norm, grad_clip), grad)
-        # else:  # disabling gradient clipping if grad_clip < 0
-        #     clipped_grad = grad
+                    grad):
         return state.apply_gradients(grads=grad)
 
     return optimize_fn
@@ -98,7 +83,7 @@ def get_sde_loss_fn(sde, model, train, reduce_mean=True, continuous=True, likeli
 
         score_fn = mutils.get_score_fn(sde, model, params, states, train=train, continuous=continuous,
                                        return_state=True)
-        data = batch['image']
+        data = batch['data']
 
         rng, step_rng = random.split(rng)
         t = random.uniform(step_rng, (data.shape[0],), minval=eps, maxval=sde.T)
@@ -133,7 +118,7 @@ def get_smld_loss_fn(vesde, model, train, reduce_mean=False):
 
     def loss_fn(rng, params, states, batch):
         model_fn = mutils.get_model_fn(model, params, states, train=train)
-        data = batch['image']
+        data = batch['data']
         rng, step_rng = random.split(rng)
         labels = random.choice(step_rng, vesde.N, shape=(data.shape[0],))
         sigmas = smld_sigma_array[labels]
@@ -159,7 +144,7 @@ def get_ddpm_loss_fn(vpsde, model, train, reduce_mean=True):
 
     def loss_fn(rng, params, states, batch):
         model_fn = mutils.get_model_fn(model, params, states, train=train)
-        data = batch['image']
+        data = batch['data']
         rng, step_rng = random.split(rng)
         labels = random.choice(step_rng, vpsde.N, shape=(data.shape[0],))
         sqrt_alphas_cumprod = vpsde.sqrt_alphas_cumprod
