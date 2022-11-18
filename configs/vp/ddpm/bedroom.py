@@ -24,29 +24,29 @@ def get_config():
 
     # training
     training = config.training
-    training.sde = 'vpsde'
+    training.sde = "vpsde"
     training.continuous = False
     training.reduce_mean = True
 
     # sampling
     sampling = config.sampling
-    sampling.method = 'pc'
-    sampling.predictor = 'ancestral_sampling'
-    sampling.corrector = 'none'
+    sampling.method = "pc"
+    sampling.predictor = "ancestral_sampling"
+    sampling.corrector = "none"
 
     # data
     data = config.data
-    data.category = 'bedroom'
+    data.category = "bedroom"
     data.centered = True
 
     # model
     model = config.model
-    model.name = 'ddpm'
+    model.name = "ddpm"
     model.scale_by_sigma = False
     model.num_scales = 1000
     model.ema_rate = 0.9999
-    model.normalization = 'GroupNorm'
-    model.nonlinearity = 'swish'
+    model.normalization = "GroupNorm"
+    model.nonlinearity = "swish"
     model.nf = 128
     model.ch_mult = (1, 1, 2, 2, 4, 4)
     model.num_res_blocks = 2

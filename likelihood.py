@@ -17,12 +17,11 @@
 # pytype: skip-file
 """Various sampling methods."""
 
-import flax
 import jax
+import flax
 import jax.numpy as jnp
 import numpy as np
 from scipy import integrate
-
 from models import utils as mutils
 
 
@@ -30,15 +29,25 @@ def get_div_fn(fn):
     """Create the divergence function of `fn` using the Hutchinson-Skilling trace estimator."""
 
     def div_fn(x, t, eps):
-        grad_fn = lambda data: jnp.sum(fn(data, t) * eps)
+        def grad_fn(data):
+            return jnp.sum(fn(data, t) * eps)
+
         grad_fn_eps = jax.grad(grad_fn)(x)
         return jnp.sum(grad_fn_eps * eps, axis=tuple(range(1, len(x.shape))))
 
     return div_fn
 
 
-def get_likelihood_fn(sde, model, inverse_scaler, hutchinson_type='Rademacher',
-                      rtol=1e-5, atol=1e-5, method='RK45', eps=1e-5):
+def get_likelihood_fn(
+    sde,
+    model,
+    inverse_scaler,
+    hutchinson_type="Rademacher",
+    rtol=1e-5,
+    atol=1e-5,
+    method="RK45",
+    eps=1e-5,
+):
     """Create a function to compute the unbiased log-likelihood estimate of a given data point.
 
     Args:
@@ -60,7 +69,14 @@ def get_likelihood_fn(sde, model, inverse_scaler, hutchinson_type='Rademacher',
 
     def drift_fn(state, x, t):
         """The drift function of the reverse-time SDE."""
-        score_fn = mutils.get_score_fn(sde, model, state.params_ema, state.model_state, train=False, continuous=True)
+        score_fn = mutils.get_score_fn(
+            sde,
+            model,
+            state.params_ema,
+            state.model_state,
+            train=False,
+            continuous=True,
+        )
         # Probability flow ODE is a special case of Reverse SDE
         rsde = sde.reverse(score_fn, probability_flow=True)
         return rsde.sde(x, t)[0]
@@ -71,8 +87,10 @@ def get_likelihood_fn(sde, model, inverse_scaler, hutchinson_type='Rademacher',
         div_fn = get_div_fn(lambda x, t: drift_fn(state, x, t))
         return div_fn(x, t, eps)
 
-    p_drift_fn = jax.pmap(drift_fn)  # Pmapped drift function of the reverse-time SDE
-    p_prior_logp_fn = jax.pmap(sde.prior_logp)  # Pmapped log-PDF of the SDE's prior distribution
+    # Pmapped drift function of the reverse-time SDE
+    p_drift_fn = jax.pmap(drift_fn)
+    # Pmapped log-PDF of the SDE's prior distribution
+    p_prior_logp_fn = jax.pmap(sde.prior_logp)
 
     def likelihood_fn(prng, pstate, data):
         """Compute an unbiased estimate to the log-likelihood in bits/dim.
@@ -90,34 +108,45 @@ def get_likelihood_fn(sde, model, inverse_scaler, hutchinson_type='Rademacher',
         """
         rng, step_rng = jax.random.split(flax.jax_utils.unreplicate(prng))
         shape = data.shape
-        if hutchinson_type == 'Gaussian':
+        if hutchinson_type == "Gaussian":
             epsilon = jax.random.normal(step_rng, shape)
-        elif hutchinson_type == 'Rademacher':
-            epsilon = jax.random.randint(step_rng, shape,
-                                         minval=0, maxval=2).astype(jnp.float32) * 2 - 1
+        elif hutchinson_type == "Rademacher":
+            epsilon = (
+                jax.random.randint(step_rng, shape, minval=0, maxval=2).astype(
+                    jnp.float32
+                )
+                * 2
+                - 1
+            )
         else:
             raise NotImplementedError(f"Hutchinson type {hutchinson_type} unknown.")
 
         def ode_func(t, x):
-            sample = mutils.from_flattened_numpy(x[:-shape[0] * shape[1]], shape)
+            sample = mutils.from_flattened_numpy(x[: -shape[0] * shape[1]], shape)
             vec_t = jnp.ones((sample.shape[0], sample.shape[1])) * t
             drift = mutils.to_flattened_numpy(p_drift_fn(pstate, sample, vec_t))
-            logp_grad = mutils.to_flattened_numpy(p_div_fn(pstate, sample, vec_t, epsilon))
+            logp_grad = mutils.to_flattened_numpy(
+                p_div_fn(pstate, sample, vec_t, epsilon)
+            )
             return np.concatenate([drift, logp_grad], axis=0)
 
-        init = jnp.concatenate([mutils.to_flattened_numpy(data), np.zeros((shape[0] * shape[1],))], axis=0)
-        solution = integrate.solve_ivp(ode_func, (eps, sde.T), init, rtol=rtol, atol=atol, method=method)
+        init = jnp.concatenate(
+            [mutils.to_flattened_numpy(data), np.zeros((shape[0] * shape[1],))], axis=0
+        )
+        solution = integrate.solve_ivp(
+            ode_func, (eps, sde.T), init, rtol=rtol, atol=atol, method=method
+        )
         nfe = solution.nfev
         zp = jnp.asarray(solution.y[:, -1])
-        z = mutils.from_flattened_numpy(zp[:-shape[0] * shape[1]], shape)
-        delta_logp = zp[-shape[0] * shape[1]:].reshape((shape[0], shape[1]))
+        z = mutils.from_flattened_numpy(zp[: -shape[0] * shape[1]], shape)
+        delta_logp = zp[-shape[0] * shape[1] :].reshape((shape[0], shape[1]))
         prior_logp = p_prior_logp_fn(z)
         bpd = -(prior_logp + delta_logp) / np.log(2)
         N = np.prod(shape[2:])
         bpd = bpd / N
         # A hack to convert log-likelihoods to bits/dim
         # based on the gradient of the inverse data normalizer.
-        offset = jnp.log2(jax.grad(inverse_scaler)(0.)) + 8.
+        offset = jnp.log2(jax.grad(inverse_scaler)(0.0)) + 8.0
         bpd += offset
         return bpd, z, nfe
 

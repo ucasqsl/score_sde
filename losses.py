@@ -29,11 +29,14 @@ from utils import batch_mul
 def get_optimizer(config):
     """Returns a flax optimizer object based on `config`."""
 
-    if config.optim.optimizer == 'Adam':
-        optimizer = optax.adam(learning_rate=config.optim.lr, b1=config.optim.beta1, eps=config.optim.eps)
+    if config.optim.optimizer == "Adam":
+        optimizer = optax.adam(
+            learning_rate=config.optim.lr, b1=config.optim.beta1, eps=config.optim.eps
+        )
     else:
         raise NotImplementedError(
-            f'Optimizer {config.optim.optimizer} not supported yet!')
+            f"Optimizer {config.optim.optimizer} not supported yet!"
+        )
     if config.optim.grad_clip >= 0:
         optimizer = optax.chain(
             optax.clip_by_global_norm(config.optim.grad_clip),
@@ -45,14 +48,22 @@ def get_optimizer(config):
 
 def optimization_manager(config):
     """Returns an optimize_fn based on `config`."""
-    def optimize_fn(state,
-                    grad):
+
+    def optimize_fn(state, grad):
         return state.apply_gradients(grads=grad)
 
     return optimize_fn
 
 
-def get_sde_loss_fn(sde, model, train, reduce_mean=True, continuous=True, likelihood_weighting=True, eps=1e-5):
+def get_sde_loss_fn(
+    sde,
+    model,
+    train,
+    reduce_mean=True,
+    continuous=True,
+    likelihood_weighting=True,
+    eps=1e-5,
+):
     """Create a loss function for training with arbirary SDEs.
 
     Args:
@@ -69,7 +80,11 @@ def get_sde_loss_fn(sde, model, train, reduce_mean=True, continuous=True, likeli
     Returns:
       A loss function.
     """
-    reduce_op = jnp.mean if reduce_mean else lambda *args, **kwargs: 0.5 * jnp.sum(*args, **kwargs)
+    reduce_op = (
+        jnp.mean
+        if reduce_mean
+        else lambda *args, **kwargs: 0.5 * jnp.sum(*args, **kwargs)
+    )
 
     def loss_fn(rng, params, states, batch):
         """Compute the loss function.
@@ -85,9 +100,16 @@ def get_sde_loss_fn(sde, model, train, reduce_mean=True, continuous=True, likeli
           new_model_state: A dictionary that contains the mutated states of the score-based model.
         """
 
-        score_fn = mutils.get_score_fn(sde, model, params, states, train=train, continuous=continuous,
-                                       return_state=True)
-        data = batch['data']
+        score_fn = mutils.get_score_fn(
+            sde,
+            model,
+            params,
+            states,
+            train=train,
+            continuous=continuous,
+            return_state=True,
+        )
+        data = batch["data"]
 
         rng, step_rng = random.split(rng)
         t = random.uniform(step_rng, (data.shape[0],), minval=eps, maxval=sde.T)
@@ -103,7 +125,7 @@ def get_sde_loss_fn(sde, model, train, reduce_mean=True, continuous=True, likeli
             losses = reduce_op(losses.reshape((losses.shape[0], -1)), axis=-1)
         else:
             g2 = sde.sde(jnp.zeros_like(data), t)[1] ** 2
-            losses = jnp.square(score + batch_mul(z, 1. / std))
+            losses = jnp.square(score + batch_mul(z, 1.0 / std))
             losses = reduce_op(losses.reshape((losses.shape[0], -1)), axis=-1) * g2
 
         loss = jnp.mean(losses)
@@ -118,11 +140,15 @@ def get_smld_loss_fn(vesde, model, train, reduce_mean=False):
 
     # Previous SMLD models assume descending sigmas
     smld_sigma_array = vesde.discrete_sigmas[::-1]
-    reduce_op = jnp.mean if reduce_mean else lambda *args, **kwargs: 0.5 * jnp.sum(*args, **kwargs)
+    reduce_op = (
+        jnp.mean
+        if reduce_mean
+        else lambda *args, **kwargs: 0.5 * jnp.sum(*args, **kwargs)
+    )
 
     def loss_fn(rng, params, states, batch):
         model_fn = mutils.get_model_fn(model, params, states, train=train)
-        data = batch['data']
+        data = batch["data"]
         rng, step_rng = random.split(rng)
         labels = random.choice(step_rng, vesde.N, shape=(data.shape[0],))
         sigmas = smld_sigma_array[labels]
@@ -131,9 +157,9 @@ def get_smld_loss_fn(vesde, model, train, reduce_mean=False):
         perturbed_data = noise + data
         rng, step_rng = random.split(rng)
         score, new_model_state = model_fn(perturbed_data, labels, rng=step_rng)
-        target = -batch_mul(noise, 1. / (sigmas ** 2))
+        target = -batch_mul(noise, 1.0 / (sigmas**2))
         losses = jnp.square(score - target)
-        losses = reduce_op(losses.reshape((losses.shape[0], -1)), axis=-1) * sigmas ** 2
+        losses = reduce_op(losses.reshape((losses.shape[0], -1)), axis=-1) * sigmas**2
         loss = jnp.mean(losses)
         return loss, new_model_state
 
@@ -144,18 +170,24 @@ def get_ddpm_loss_fn(vpsde, model, train, reduce_mean=True):
     """Legacy code to reproduce previous results on DDPM. Not recommended for new work."""
     assert isinstance(vpsde, VPSDE), "DDPM training only works for VPSDEs."
 
-    reduce_op = jnp.mean if reduce_mean else lambda *args, **kwargs: 0.5 * jnp.sum(*args, **kwargs)
+    reduce_op = (
+        jnp.mean
+        if reduce_mean
+        else lambda *args, **kwargs: 0.5 * jnp.sum(*args, **kwargs)
+    )
 
     def loss_fn(rng, params, states, batch):
         model_fn = mutils.get_model_fn(model, params, states, train=train)
-        data = batch['data']
+        data = batch["data"]
         rng, step_rng = random.split(rng)
         labels = random.choice(step_rng, vpsde.N, shape=(data.shape[0],))
         sqrt_alphas_cumprod = vpsde.sqrt_alphas_cumprod
         sqrt_1m_alphas_cumprod = vpsde.sqrt_1m_alphas_cumprod
         rng, step_rng = random.split(rng)
         noise = random.normal(step_rng, data.shape)
-        perturbed_data = batch_mul(sqrt_alphas_cumprod[labels], data) + batch_mul(sqrt_1m_alphas_cumprod[labels], noise)
+        perturbed_data = batch_mul(sqrt_alphas_cumprod[labels], data) + batch_mul(
+            sqrt_1m_alphas_cumprod[labels], noise
+        )
         rng, step_rng = random.split(rng)
         score, new_model_state = model_fn(perturbed_data, labels, rng=step_rng)
         losses = jnp.square(score - noise)
@@ -166,7 +198,16 @@ def get_ddpm_loss_fn(vpsde, model, train, reduce_mean=True):
     return loss_fn
 
 
-def get_step_fn(sde, model, train, optimize_fn=None, reduce_mean=False, continuous=True, likelihood_weighting=False, pmap=True):
+def get_step_fn(
+    sde,
+    model,
+    train,
+    optimize_fn=None,
+    reduce_mean=False,
+    continuous=True,
+    likelihood_weighting=False,
+    pmap=True,
+):
     """Create a one-step training/evaluation function.
 
     Args:
@@ -183,16 +224,26 @@ def get_step_fn(sde, model, train, optimize_fn=None, reduce_mean=False, continuo
       A one-step function for training or evaluation.
     """
     if continuous:
-        loss_fn = get_sde_loss_fn(sde, model, train, reduce_mean=reduce_mean,
-                                  continuous=True, likelihood_weighting=likelihood_weighting)
+        loss_fn = get_sde_loss_fn(
+            sde,
+            model,
+            train,
+            reduce_mean=reduce_mean,
+            continuous=True,
+            likelihood_weighting=likelihood_weighting,
+        )
     else:
-        assert not likelihood_weighting, "Likelihood weighting is not supported for original SMLD/DDPM training."
+        assert (
+            not likelihood_weighting
+        ), "Likelihood weighting is not supported for original SMLD/DDPM training."
         if isinstance(sde, VESDE):
             loss_fn = get_smld_loss_fn(sde, model, train, reduce_mean=reduce_mean)
         elif isinstance(sde, VPSDE):
             loss_fn = get_ddpm_loss_fn(sde, model, train, reduce_mean=reduce_mean)
         else:
-            raise ValueError(f"Discrete training for {sde.__class__.__name__} is not recommended.")
+            raise ValueError(
+                f"Discrete training for {sde.__class__.__name__} is not recommended."
+            )
 
     def step_fn_pmap(carry_state, batch):
         """Running one step of training or evaluation.
@@ -216,23 +267,22 @@ def get_step_fn(sde, model, train, optimize_fn=None, reduce_mean=False, continuo
             params = state.params
             states = state.model_state
             (loss, new_model_state), grad = grad_fn(step_rng, params, states, batch)
-            grad = jax.lax.pmean(grad, axis_name='batch')
+            grad = jax.lax.pmean(grad, axis_name="batch")
             state = optimize_fn(state, grad)
             new_params_ema = jax.tree_util.tree_map(
-                lambda p_ema, p: p_ema * state.ema_rate + p * (1. - state.ema_rate),
-                state.params_ema, state.params
+                lambda p_ema, p: p_ema * state.ema_rate + p * (1.0 - state.ema_rate),
+                state.params_ema,
+                state.params,
             )
             step = state.step + 1
             new_state = state.replace(
-                step=step,
-                model_state=new_model_state,
-                params_ema=new_params_ema
+                step=step, model_state=new_model_state, params_ema=new_params_ema
             )
         else:
             loss, _ = loss_fn(step_rng, state.params_ema, state.model_state, batch)
             new_state = state
 
-        loss = jax.lax.pmean(loss, axis_name='batch')
+        loss = jax.lax.pmean(loss, axis_name="batch")
         new_carry_state = (rng, new_state)
         return new_carry_state, loss
 
@@ -261,14 +311,13 @@ def get_step_fn(sde, model, train, optimize_fn=None, reduce_mean=False, continuo
             # grad = jnp.mean(grad, axis=0)
             state = optimize_fn(state, grad)
             new_params_ema = jax.tree_util.tree_map(
-                lambda p_ema, p: p_ema * state.ema_rate + p * (1. - state.ema_rate),
-                state.params_ema, state.params
+                lambda p_ema, p: p_ema * state.ema_rate + p * (1.0 - state.ema_rate),
+                state.params_ema,
+                state.params,
             )
             step = state.step + 1
             new_state = state.replace(
-                step=step,
-                model_state=new_model_state,
-                params_ema=new_params_ema
+                step=step, model_state=new_model_state, params_ema=new_params_ema
             )
         else:
             loss, _ = loss_fn(step_rng, state.params_ema, state.model_state, batch)

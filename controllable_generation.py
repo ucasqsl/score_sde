@@ -1,17 +1,30 @@
-import functools
-
-import jax
-import jax.numpy as jnp
-import jax.random as random
-
 from models import utils as mutils
-from sampling import NoneCorrector, NonePredictor, shared_corrector_update_fn, shared_predictor_update_fn
+import jax.numpy as jnp
+import jax
+import jax.random as random
+from sampling import (
+    NoneCorrector,
+    NonePredictor,
+    shared_corrector_update_fn,
+    shared_predictor_update_fn,
+)
+import functools
 from utils import batch_mul
 
 
-def get_pc_inpainter(sde, model, predictor, corrector, inverse_scaler, snr,
-                     n_steps=1, probability_flow=False, continuous=False,
-                     denoise=True, eps=1e-5):
+def get_pc_inpainter(
+    sde,
+    model,
+    predictor,
+    corrector,
+    inverse_scaler,
+    snr,
+    n_steps=1,
+    probability_flow=False,
+    continuous=False,
+    denoise=True,
+    eps=1e-5,
+):
     """Create an image inpainting function that uses PC samplers.
 
     Args:
@@ -31,19 +44,23 @@ def get_pc_inpainter(sde, model, predictor, corrector, inverse_scaler, snr,
       A pmapped inpainting function.
     """
     # Define predictor & corrector
-    predictor_update_fn = functools.partial(shared_predictor_update_fn,
-                                            sde=sde,
-                                            model=model,
-                                            predictor=predictor,
-                                            probability_flow=probability_flow,
-                                            continuous=continuous)
-    corrector_update_fn = functools.partial(shared_corrector_update_fn,
-                                            sde=sde,
-                                            model=model,
-                                            corrector=corrector,
-                                            continuous=continuous,
-                                            snr=snr,
-                                            n_steps=n_steps)
+    predictor_update_fn = functools.partial(
+        shared_predictor_update_fn,
+        sde=sde,
+        model=model,
+        predictor=predictor,
+        probability_flow=probability_flow,
+        continuous=continuous,
+    )
+    corrector_update_fn = functools.partial(
+        shared_corrector_update_fn,
+        sde=sde,
+        model=model,
+        corrector=corrector,
+        continuous=continuous,
+        snr=snr,
+        n_steps=n_steps,
+    )
 
     def get_inpaint_update_fn(update_fn):
         """Modify the update function of predictor & corrector to incorporate data information."""
@@ -53,9 +70,11 @@ def get_pc_inpainter(sde, model, predictor, corrector, inverse_scaler, snr,
             vec_t = jnp.ones(data.shape[0]) * t
             x, x_mean = update_fn(step_rng, state, x, vec_t)
             masked_data_mean, std = sde.marginal_prob(data, vec_t)
-            masked_data = masked_data_mean + batch_mul(jax.random.normal(rng, x.shape), std)
-            x = x * (1. - mask) + masked_data * mask
-            x_mean = x * (1. - mask) + masked_data_mean * mask
+            masked_data = masked_data_mean + batch_mul(
+                jax.random.normal(rng, x.shape), std
+            )
+            x = x * (1.0 - mask) + masked_data * mask
+            x_mean = x * (1.0 - mask) + masked_data_mean * mask
             return x, x_mean
 
         return inpaint_update_fn
@@ -78,7 +97,7 @@ def get_pc_inpainter(sde, model, predictor, corrector, inverse_scaler, snr,
         """
         # Initial sample
         rng, step_rng = random.split(rng)
-        x = data * mask + sde.prior_sampling(step_rng, data.shape) * (1. - mask)
+        x = data * mask + sde.prior_sampling(step_rng, data.shape) * (1.0 - mask)
         timesteps = jnp.linspace(sde.T, eps, sde.N)
 
         def loop_body(i, val):
@@ -93,12 +112,22 @@ def get_pc_inpainter(sde, model, predictor, corrector, inverse_scaler, snr,
         _, x, x_mean = jax.lax.fori_loop(0, sde.N, loop_body, (rng, x, x))
         return inverse_scaler(x_mean if denoise else x)
 
-    return jax.pmap(pc_inpainter, axis_name='batch')
+    return jax.pmap(pc_inpainter, axis_name="batch")
 
 
-def get_pc_colorizer(sde, model, predictor, corrector, inverse_scaler,
-                     snr, n_steps=1, probability_flow=False, continuous=False,
-                     denoise=True, eps=1e-5):
+def get_pc_colorizer(
+    sde,
+    model,
+    predictor,
+    corrector,
+    inverse_scaler,
+    snr,
+    n_steps=1,
+    probability_flow=False,
+    continuous=False,
+    denoise=True,
+    eps=1e-5,
+):
     """Create a image colorization function based on Predictor-Corrector (PC) sampling.
 
     Args:
@@ -119,9 +148,13 @@ def get_pc_colorizer(sde, model, predictor, corrector, inverse_scaler,
 
     # `M` is an orthonormal matrix to decouple image space to a latent space where the gray-scale image
     # occupies a separate channel
-    M = jnp.asarray([[5.7735014e-01, -8.1649649e-01, 4.7008697e-08],
-                     [5.7735026e-01, 4.0824834e-01, 7.0710671e-01],
-                     [5.7735026e-01, 4.0824822e-01, -7.0710683e-01]])
+    M = jnp.asarray(
+        [
+            [5.7735014e-01, -8.1649649e-01, 4.7008697e-08],
+            [5.7735026e-01, 4.0824834e-01, 7.0710671e-01],
+            [5.7735026e-01, 4.0824822e-01, -7.0710683e-01],
+        ]
+    )
     # M = jnp.asarray([[0.28361226, 0.95408977, 0.09631611],
     #                  [0.95408977, -0.29083936, 0.07159032],
     #                  [0.09631611, 0.07159032, -0.9927729]])
@@ -131,25 +164,29 @@ def get_pc_colorizer(sde, model, predictor, corrector, inverse_scaler,
 
     # Decouple a gray-scale image with `M`
     def decouple(inputs):
-        return jnp.einsum('BHWi,ij->BHWj', inputs, M)
+        return jnp.einsum("BHWi,ij->BHWj", inputs, M)
 
     # The inverse function to `decouple`.
     def couple(inputs):
-        return jnp.einsum('BHWi,ij->BHWj', inputs, invM)
+        return jnp.einsum("BHWi,ij->BHWj", inputs, invM)
 
-    predictor_update_fn = functools.partial(shared_predictor_update_fn,
-                                            sde=sde,
-                                            model=model,
-                                            predictor=predictor,
-                                            probability_flow=probability_flow,
-                                            continuous=continuous)
-    corrector_update_fn = functools.partial(shared_corrector_update_fn,
-                                            sde=sde,
-                                            model=model,
-                                            corrector=corrector,
-                                            continuous=continuous,
-                                            snr=snr,
-                                            n_steps=n_steps)
+    predictor_update_fn = functools.partial(
+        shared_predictor_update_fn,
+        sde=sde,
+        model=model,
+        predictor=predictor,
+        probability_flow=probability_flow,
+        continuous=continuous,
+    )
+    corrector_update_fn = functools.partial(
+        shared_corrector_update_fn,
+        sde=sde,
+        model=model,
+        corrector=corrector,
+        continuous=continuous,
+        snr=snr,
+        n_steps=n_steps,
+    )
 
     def get_colorization_update_fn(update_fn):
         "Modify update functions of predictor & corrector to incorporate information of gray-scale images."
@@ -160,16 +197,19 @@ def get_pc_colorizer(sde, model, predictor, corrector, inverse_scaler,
             vec_t = jnp.ones(x.shape[0]) * t
             x, x_mean = update_fn(step_rng, state, x, vec_t)
             masked_data_mean, std = sde.marginal_prob(decouple(gray_scale_img), vec_t)
-            masked_data = masked_data_mean + batch_mul(jax.random.normal(rng, x.shape), std)
-            x = couple(decouple(x) * (1. - mask) + masked_data * mask)
-            x_mean = couple(decouple(x) * (1. - mask) + masked_data_mean * mask)
+            masked_data = masked_data_mean + batch_mul(
+                jax.random.normal(rng, x.shape), std
+            )
+            x = couple(decouple(x) * (1.0 - mask) + masked_data * mask)
+            x_mean = couple(decouple(x) * (1.0 - mask) + masked_data_mean * mask)
             return x, x_mean
 
         return colorization_update_fn
 
     def get_mask(image):
-        mask = jnp.concatenate([jnp.ones_like(image[..., :1]),
-                                jnp.zeros_like(image[..., 1:])], axis=-1)
+        mask = jnp.concatenate(
+            [jnp.ones_like(image[..., :1]), jnp.zeros_like(image[..., 1:])], axis=-1
+        )
         return mask
 
     predictor_colorize_update_fn = get_colorization_update_fn(predictor_update_fn)
@@ -190,30 +230,48 @@ def get_pc_colorizer(sde, model, predictor, corrector, inverse_scaler,
         mask = get_mask(gray_scale_img)
         # Initial sample
         rng, step_rng = random.split(rng)
-        x = couple(decouple(gray_scale_img) * mask + \
-                   decouple(sde.prior_sampling(step_rng, shape) * (1. - mask)))
+        x = couple(
+            decouple(gray_scale_img) * mask
+            + decouple(sde.prior_sampling(step_rng, shape) * (1.0 - mask))
+        )
         timesteps = jnp.linspace(sde.T, eps, sde.N)
 
         def loop_body(i, val):
             rng, x, x_mean = val
             t = timesteps[i]
             rng, step_rng = random.split(rng)
-            x, x_mean = corrector_colorize_update_fn(step_rng, state, gray_scale_img, x, t)
+            x, x_mean = corrector_colorize_update_fn(
+                step_rng, state, gray_scale_img, x, t
+            )
             rng, step_rng = random.split(rng)
-            x, x_mean = predictor_colorize_update_fn(step_rng, state, gray_scale_img, x, t)
+            x, x_mean = predictor_colorize_update_fn(
+                step_rng, state, gray_scale_img, x, t
+            )
 
             return rng, x, x_mean
 
         _, x, x_mean = jax.lax.fori_loop(0, sde.N, loop_body, (rng, x, x))
         return inverse_scaler(x_mean if denoise else x)
 
-    return jax.pmap(pc_colorizer, axis_name='batch')
+    return jax.pmap(pc_colorizer, axis_name="batch")
 
 
-def get_pc_conditional_sampler(sde, score_model, classifier, classifier_params, shape,
-                               predictor, corrector, inverse_scaler, snr,
-                               n_steps=1, probability_flow=False,
-                               continuous=False, denoise=True, eps=1e-5):
+def get_pc_conditional_sampler(
+    sde,
+    score_model,
+    classifier,
+    classifier_params,
+    shape,
+    predictor,
+    corrector,
+    inverse_scaler,
+    snr,
+    n_steps=1,
+    probability_flow=False,
+    continuous=False,
+    denoise=True,
+    eps=1e-5,
+):
     """Class-conditional sampling with Predictor-Corrector (PC) samplers.
 
     Args:
@@ -241,8 +299,14 @@ def get_pc_conditional_sampler(sde, score_model, classifier, classifier_params, 
 
     def conditional_predictor_update_fn(rng, state, x, t, labels):
         """The predictor update function for class-conditional sampling."""
-        score_fn = mutils.get_score_fn(sde, score_model, state.params_ema, state.model_state, train=False,
-                                       continuous=continuous)
+        score_fn = mutils.get_score_fn(
+            sde,
+            score_model,
+            state.params_ema,
+            state.model_state,
+            train=False,
+            continuous=continuous,
+        )
 
         def total_grad_fn(x, t):
             ve_noise_scale = sde.marginal_prob(x, t)[1]
@@ -256,8 +320,14 @@ def get_pc_conditional_sampler(sde, score_model, classifier, classifier_params, 
 
     def conditional_corrector_update_fn(rng, state, x, t, labels):
         """The corrector update function for class-conditional sampling."""
-        score_fn = mutils.get_score_fn(sde, score_model, state.params_ema, state.model_state, train=False,
-                                       continuous=continuous)
+        score_fn = mutils.get_score_fn(
+            sde,
+            score_model,
+            state.params_ema,
+            state.model_state,
+            train=False,
+            continuous=continuous,
+        )
 
         def total_grad_fn(x, t):
             ve_noise_scale = sde.marginal_prob(x, t)[1]
@@ -292,12 +362,16 @@ def get_pc_conditional_sampler(sde, score_model, classifier, classifier_params, 
             t = timesteps[i]
             vec_t = jnp.ones(shape[0]) * t
             rng, step_rng = random.split(rng)
-            x, x_mean = conditional_corrector_update_fn(step_rng, score_state, x, vec_t, labels)
+            x, x_mean = conditional_corrector_update_fn(
+                step_rng, score_state, x, vec_t, labels
+            )
             rng, step_rng = random.split(rng)
-            x, x_mean = conditional_predictor_update_fn(step_rng, score_state, x, vec_t, labels)
+            x, x_mean = conditional_predictor_update_fn(
+                step_rng, score_state, x, vec_t, labels
+            )
             return rng, x, x_mean
 
         _, x, x_mean = jax.lax.fori_loop(0, sde.N, loop_body, (rng, x, x))
         return inverse_scaler(x_mean if denoise else x)
 
-    return jax.pmap(pc_conditional_sampler, axis_name='batch')
+    return jax.pmap(pc_conditional_sampler, axis_name="batch")

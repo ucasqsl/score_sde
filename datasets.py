@@ -24,7 +24,7 @@ def get_data_scaler(config):
     """Data normalizer. Assume data are always in [0, 1]."""
     if config.data.centered:
         # Rescale to [-1, 1]
-        return lambda x: x * 2. - 1.
+        return lambda x: x * 2.0 - 1.0
     else:
         return lambda x: x
 
@@ -33,7 +33,7 @@ def get_data_inverse_scaler(config):
     """Inverse data normalizer."""
     if config.data.centered:
         # Rescale [-1, 1] to [0, 1]
-        return lambda x: (x + 1.) / 2.
+        return lambda x: (x + 1.0) / 2.0
     else:
         return lambda x: x
 
@@ -42,13 +42,13 @@ def crop_resize(image, resolution):
     """Crop and resize an image to the given resolution."""
     crop = tf.minimum(tf.shape(image)[0], tf.shape(image)[1])
     h, w = tf.shape(image)[0], tf.shape(image)[1]
-    image = image[(h - crop) // 2:(h + crop) // 2,
-            (w - crop) // 2:(w + crop) // 2]
+    image = image[(h - crop) // 2 : (h + crop) // 2, (w - crop) // 2 : (w + crop) // 2]
     image = tf.image.resize(
         image,
         size=(resolution, resolution),
         antialias=True,
-        method=tf.image.ResizeMethod.BICUBIC)
+        method=tf.image.ResizeMethod.BICUBIC,
+    )
     return tf.cast(image, tf.uint8)
 
 
@@ -68,7 +68,9 @@ def central_crop(image, size):
     return tf.image.crop_to_bounding_box(image, top, left, size, size)
 
 
-def get_dataset(config, additional_dim=None, uniform_dequantization=False, evaluation=False):
+def get_dataset(
+    config, additional_dim=None, uniform_dequantization=False, evaluation=False
+):
     """Create data loaders for training and evaluation.
 
     Args:
@@ -82,10 +84,14 @@ def get_dataset(config, additional_dim=None, uniform_dequantization=False, evalu
       train_ds, eval_ds, dataset_builder.
     """
     # Compute batch size for this worker.
-    batch_size = config.training.batch_size if not evaluation else config.eval.batch_size
+    batch_size = (
+        config.training.batch_size if not evaluation else config.eval.batch_size
+    )
     if batch_size % jax.device_count() != 0:
-        raise ValueError(f'Batch sizes ({batch_size} must be divided by'
-                         f'the number of devices ({jax.device_count()})')
+        raise ValueError(
+            f"Batch sizes ({batch_size} must be divided by"
+            f"the number of devices ({jax.device_count()})"
+        )
 
     per_device_batch_size = batch_size // jax.device_count()
     # Reduce this when image resolution is too large and data pointer is stored
@@ -99,29 +105,32 @@ def get_dataset(config, additional_dim=None, uniform_dequantization=False, evalu
         batch_dims = [jax.local_device_count(), additional_dim, per_device_batch_size]
 
     # Create dataset builders for each dataset.
-    if config.data.dataset == 'CIFAR10':
-        dataset_builder = tfds.builder('cifar10')
-        train_split_name = 'train'
-        eval_split_name = 'test'
+    if config.data.dataset == "CIFAR10":
+        dataset_builder = tfds.builder("cifar10")
+        train_split_name = "train"
+        eval_split_name = "test"
 
         def resize_op(img):
             img = tf.image.convert_image_dtype(img, tf.float32)
-            return tf.image.resize(img, [config.data.image_size, config.data.image_size], antialias=True)
+            return tf.image.resize(
+                img, [config.data.image_size, config.data.image_size], antialias=True
+            )
 
-    elif config.data.dataset == 'SVHN':
-        dataset_builder = tfds.builder('svhn_cropped')
-        train_split_name = 'train'
-        eval_split_name = 'test'
+    elif config.data.dataset == "SVHN":
+        dataset_builder = tfds.builder("svhn_cropped")
+        train_split_name = "train"
+        eval_split_name = "test"
 
         def resize_op(img):
             img = tf.image.convert_image_dtype(img, tf.float32)
-            return tf.image.resize(img, [config.data.image_size, config.data.image_size], antialias=True)
+            return tf.image.resize(
+                img, [config.data.image_size, config.data.image_size], antialias=True
+            )
 
-
-    elif config.data.dataset == 'CELEBA':
-        dataset_builder = tfds.builder('celeb_a')
-        train_split_name = 'train'
-        eval_split_name = 'validation'
+    elif config.data.dataset == "CELEBA":
+        dataset_builder = tfds.builder("celeb_a")
+        train_split_name = "train"
+        eval_split_name = "validation"
 
         def resize_op(img):
             img = tf.image.convert_image_dtype(img, tf.float32)
@@ -129,12 +138,13 @@ def get_dataset(config, additional_dim=None, uniform_dequantization=False, evalu
             img = resize_small(img, config.data.image_size)
             return img
 
-    elif config.data.dataset == 'LSUN':
-        dataset_builder = tfds.builder(f'lsun/{config.data.category}')
-        train_split_name = 'train'
-        eval_split_name = 'validation'
+    elif config.data.dataset == "LSUN":
+        dataset_builder = tfds.builder(f"lsun/{config.data.category}")
+        train_split_name = "train"
+        eval_split_name = "validation"
 
         if config.data.image_size == 128:
+
             def resize_op(img):
                 img = tf.image.convert_image_dtype(img, tf.float32)
                 img = resize_small(img, config.data.image_size)
@@ -142,45 +152,55 @@ def get_dataset(config, additional_dim=None, uniform_dequantization=False, evalu
                 return img
 
         else:
+
             def resize_op(img):
                 img = crop_resize(img, config.data.image_size)
                 img = tf.image.convert_image_dtype(img, tf.float32)
                 return img
 
-    elif config.data.dataset in ['FFHQ', 'CelebAHQ']:
+    elif config.data.dataset in ["FFHQ", "CelebAHQ"]:
         dataset_builder = tf.data.TFRecordDataset(config.data.tfrecords_path)
-        train_split_name = eval_split_name = 'train'
+        train_split_name = eval_split_name = "train"
 
     else:
-        raise NotImplementedError(
-            f'Dataset {config.data.dataset} not yet supported.')
+        raise NotImplementedError(f"Dataset {config.data.dataset} not yet supported.")
 
     # Customize preprocess functions for each dataset.
-    if config.data.dataset in ['FFHQ', 'CelebAHQ']:
+    if config.data.dataset in ["FFHQ", "CelebAHQ"]:
+
         def preprocess_fn(d):
-            sample = tf.io.parse_single_example(d, features={
-                'shape': tf.io.FixedLenFeature([3], tf.int64),
-                'data': tf.io.FixedLenFeature([], tf.string)})
-            data = tf.io.decode_raw(sample['data'], tf.uint8)
-            data = tf.reshape(data, sample['shape'])
+            sample = tf.io.parse_single_example(
+                d,
+                features={
+                    "shape": tf.io.FixedLenFeature([3], tf.int64),
+                    "data": tf.io.FixedLenFeature([], tf.string),
+                },
+            )
+            data = tf.io.decode_raw(sample["data"], tf.uint8)
+            data = tf.reshape(data, sample["shape"])
             data = tf.transpose(data, (1, 2, 0))
             img = tf.image.convert_image_dtype(data, tf.float32)
             if config.data.random_flip and not evaluation:
                 img = tf.image.random_flip_left_right(img)
             if uniform_dequantization:
-                img = (tf.random.uniform(img.shape, dtype=tf.float32) + img * 255.) / 256.
+                img = (
+                    tf.random.uniform(img.shape, dtype=tf.float32) + img * 255.0
+                ) / 256.0
             return dict(data=img, label=None)
 
     else:
+
         def preprocess_fn(d):
             """Basic preprocessing function scales data to [0, 1) and randomly flips."""
-            img = resize_op(d['image'])
+            img = resize_op(d["image"])
             if config.data.random_flip and not evaluation:
                 img = tf.image.random_flip_left_right(img)
             if uniform_dequantization:
-                img = (tf.random.uniform(img.shape, dtype=tf.float32) + img * 255.) / 256.
+                img = (
+                    tf.random.uniform(img.shape, dtype=tf.float32) + img * 255.0
+                ) / 256.0
 
-            return dict(data=img, label=d.get('label', None))
+            return dict(data=img, label=d.get("label", None))
 
     def create_dataset(dataset_builder, split):
         dataset_options = tf.data.Options()
@@ -191,7 +211,8 @@ def get_dataset(config, additional_dim=None, uniform_dequantization=False, evalu
         if isinstance(dataset_builder, tfds.core.DatasetBuilder):
             dataset_builder.download_and_prepare()
             ds = dataset_builder.as_dataset(
-                split=split, shuffle_files=True, read_config=read_config)
+                split=split, shuffle_files=True, read_config=read_config
+            )
         else:
             ds = dataset_builder.with_options(dataset_options)
         ds = ds.repeat(count=num_epochs)

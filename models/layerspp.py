@@ -17,14 +17,12 @@
 """Layers for defining NCSN++.
 """
 from typing import Any, Optional, Tuple
-
+from . import layers
+from . import up_or_down_sampling
 import flax.linen as nn
 import jax
 import jax.numpy as jnp
 import numpy as np
-
-from . import layers
-from . import up_or_down_sampling
 
 conv1x1 = layers.ddpm_conv1x1
 conv3x3 = layers.ddpm_conv3x3
@@ -34,12 +32,15 @@ default_init = layers.default_init
 
 class GaussianFourierProjection(nn.Module):
     """Gaussian Fourier embeddings for noise levels."""
+
     embedding_size: int = 256
     scale: float = 1.0
 
     @nn.compact
     def __call__(self, x):
-        W = self.param('W', jax.nn.initializers.normal(stddev=self.scale), (self.embedding_size,))
+        W = self.param(
+            "W", jax.nn.initializers.normal(stddev=self.scale), (self.embedding_size,)
+        )
         W = jax.lax.stop_gradient(W)
         x_proj = x[:, None] * W[None, :] * 2 * jnp.pi
         return jnp.concatenate([jnp.sin(x_proj), jnp.cos(x_proj)], axis=-1)
@@ -47,23 +48,25 @@ class GaussianFourierProjection(nn.Module):
 
 class Combine(nn.Module):
     """Combine information from skip connections."""
-    method: str = 'cat'
+
+    method: str = "cat"
 
     @nn.compact
     def __call__(self, x, y):
         h = conv1x1(x, y.shape[-1])
-        if self.method == 'cat':
+        if self.method == "cat":
             return jnp.concatenate([h, y], axis=-1)
-        elif self.method == 'sum':
+        elif self.method == "sum":
             return h + y
         else:
-            raise ValueError(f'Method {self.method} not recognized.')
+            raise ValueError(f"Method {self.method} not recognized.")
 
 
 class AttnBlockpp(nn.Module):
     """Channel-wise self-attention block. Modified from DDPM."""
+
     skip_rescale: bool = False
-    init_scale: float = 0.
+    init_scale: float = 0.0
 
     @nn.compact
     def __call__(self, x):
@@ -73,16 +76,16 @@ class AttnBlockpp(nn.Module):
         k = NIN(C)(h)
         v = NIN(C)(h)
 
-        w = jnp.einsum('bhwc,bHWc->bhwHW', q, k) * (int(C) ** (-0.5))
+        w = jnp.einsum("bhwc,bHWc->bhwHW", q, k) * (int(C) ** (-0.5))
         w = jnp.reshape(w, (B, H, W, H * W))
         w = jax.nn.softmax(w, axis=-1)
         w = jnp.reshape(w, (B, H, W, H, W))
-        h = jnp.einsum('bhwHW,bHWc->bhwc', w, v)
+        h = jnp.einsum("bhwHW,bHWc->bhwc", w, v)
         h = NIN(C, init_scale=self.init_scale)(h)
         if not self.skip_rescale:
             return x + h
         else:
-            return (x + h) / np.sqrt(2.)
+            return (x + h) / np.sqrt(2.0)
 
 
 class Upsample(nn.Module):
@@ -96,19 +99,21 @@ class Upsample(nn.Module):
         B, H, W, C = x.shape
         out_ch = self.out_ch if self.out_ch else C
         if not self.fir:
-            h = jax.image.resize(x, (x.shape[0], H * 2, W * 2, C), 'nearest')
+            h = jax.image.resize(x, (x.shape[0], H * 2, W * 2, C), "nearest")
             if self.with_conv:
                 h = conv3x3(h, out_ch)
         else:
             if not self.with_conv:
                 h = up_or_down_sampling.upsample_2d(x, self.fir_kernel, factor=2)
             else:
-                h = up_or_down_sampling.Conv2d(out_ch,
-                                               kernel=3,
-                                               up=True,
-                                               resample_kernel=self.fir_kernel,
-                                               use_bias=True,
-                                               kernel_init=default_init())(x)
+                h = up_or_down_sampling.Conv2d(
+                    out_ch,
+                    kernel=3,
+                    up=True,
+                    resample_kernel=self.fir_kernel,
+                    use_bias=True,
+                    kernel_init=default_init(),
+                )(x)
 
         assert h.shape == (B, 2 * H, 2 * W, out_ch)
         return h
@@ -128,7 +133,7 @@ class Downsample(nn.Module):
             if self.with_conv:
                 x = conv3x3(x, out_ch, stride=2)
             else:
-                x = nn.avg_pool(x, window_shape=(2, 2), strides=(2, 2), padding='SAME')
+                x = nn.avg_pool(x, window_shape=(2, 2), strides=(2, 2), padding="SAME")
         else:
             if not self.with_conv:
                 x = up_or_down_sampling.downsample_2d(x, self.fir_kernel, factor=2)
@@ -139,7 +144,8 @@ class Downsample(nn.Module):
                     down=True,
                     resample_kernel=self.fir_kernel,
                     use_bias=True,
-                    kernel_init=default_init())(x)
+                    kernel_init=default_init(),
+                )(x)
 
         assert x.shape == (B, H // 2, W // 2, out_ch)
         return x
@@ -147,12 +153,13 @@ class Downsample(nn.Module):
 
 class ResnetBlockDDPMpp(nn.Module):
     """ResBlock adapted from DDPM."""
+
     act: Any
     out_ch: Optional[int] = None
     conv_shortcut: bool = False
     dropout: float = 0.1
     skip_rescale: bool = False
-    init_scale: float = 0.
+    init_scale: float = 0.0
 
     @nn.compact
     def __call__(self, x, temb=None, train=True):
@@ -162,7 +169,9 @@ class ResnetBlockDDPMpp(nn.Module):
         h = conv3x3(h, out_ch)
         # Add bias to each feature map conditioned on the time embedding
         if temb is not None:
-            h += nn.Dense(out_ch, kernel_init=default_init())(self.act(temb))[:, None, None, :]
+            h += nn.Dense(out_ch, kernel_init=default_init())(self.act(temb))[
+                :, None, None, :
+            ]
 
         h = self.act(nn.GroupNorm(num_groups=min(h.shape[-1] // 4, 32))(h))
         h = nn.Dropout(self.dropout)(h, deterministic=not train)
@@ -176,11 +185,12 @@ class ResnetBlockDDPMpp(nn.Module):
         if not self.skip_rescale:
             return x + h
         else:
-            return (x + h) / np.sqrt(2.)
+            return (x + h) / np.sqrt(2.0)
 
 
 class ResnetBlockBigGANpp(nn.Module):
     """ResBlock adapted from BigGAN."""
+
     act: Any
     up: bool = False
     down: bool = False
@@ -189,7 +199,7 @@ class ResnetBlockBigGANpp(nn.Module):
     fir: bool = False
     fir_kernel: Tuple[int] = (1, 3, 3, 1)
     skip_rescale: bool = True
-    init_scale: float = 0.
+    init_scale: float = 0.0
 
     @nn.compact
     def __call__(self, x, temb=None, train=True):
@@ -215,7 +225,9 @@ class ResnetBlockBigGANpp(nn.Module):
         h = conv3x3(h, out_ch)
         # Add bias to each feature map conditioned on the time embedding
         if temb is not None:
-            h += nn.Dense(out_ch, kernel_init=default_init())(self.act(temb))[:, None, None, :]
+            h += nn.Dense(out_ch, kernel_init=default_init())(self.act(temb))[
+                :, None, None, :
+            ]
 
         h = self.act(nn.GroupNorm(num_groups=min(h.shape[-1] // 4, 32))(h))
         h = nn.Dropout(self.dropout)(h, deterministic=not train)
@@ -226,4 +238,4 @@ class ResnetBlockBigGANpp(nn.Module):
         if not self.skip_rescale:
             return x + h
         else:
-            return (x + h) / np.sqrt(2.)
+            return (x + h) / np.sqrt(2.0)

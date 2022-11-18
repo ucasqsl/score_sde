@@ -45,26 +45,23 @@ wideresnet paper. Setting `use_additional_skip_connections` to True will add
 them back and then reproduces exactly the model used in autoaugment.
 """
 
-from typing import Tuple
+import numpy as np
 
 import flax
+from flax import linen as nn
 import jax
 import jax.numpy as jnp
-import numpy as np
-from flax import linen as nn
+from typing import Tuple
 
 _BATCHNORM_MOMENTUM = 0.9
 _BATCHNORM_EPSILON = 1e-5
 
 # Kaiming initialization with fan out mode. Should be used to initialize
 # convolutional kernels.
-conv_kernel_init_fn = jax.nn.initializers.variance_scaling(
-    2.0, 'fan_out', 'normal')
+conv_kernel_init_fn = jax.nn.initializers.variance_scaling(2.0, "fan_out", "normal")
 
 
-def dense_layer_init_fn(key,
-                        shape,
-                        dtype=jnp.float32):
+def dense_layer_init_fn(key, shape, dtype=jnp.float32):
     """Initializer for the final dense layer.
 
     Args:
@@ -80,9 +77,7 @@ def dense_layer_init_fn(key,
     return jax.random.uniform(key, shape, dtype, -1) * unif_init_range
 
 
-def shake_shake_train(xa,
-                      xb,
-                      rng=None):
+def shake_shake_train(xa, xb, rng=None):
     """Shake-shake regularization in training mode.
 
     Shake-shake regularization interpolates between inputs A and B
@@ -104,9 +99,11 @@ def shake_shake_train(xa,
 
     # Draw different interpolation factors (gate) for forward and backward pass.
     gate_forward = jax.random.uniform(
-        gate_forward_key, gate_shape, dtype=jnp.float32, minval=0.0, maxval=1.0)
+        gate_forward_key, gate_shape, dtype=jnp.float32, minval=0.0, maxval=1.0
+    )
     gate_backward = jax.random.uniform(
-        gate_backward_key, gate_shape, dtype=jnp.float32, minval=0.0, maxval=1.0)
+        gate_backward_key, gate_shape, dtype=jnp.float32, minval=0.0, maxval=1.0
+    )
     # Compute interpolated x for forward and backward.
     x_forward = xa * gate_forward + xb * (1.0 - gate_forward)
     x_backward = xa * gate_backward + xb * (1.0 - gate_backward)
@@ -128,13 +125,7 @@ def shake_shake_eval(xa, xb):
     return (xa + xb) * 0.5
 
 
-def shake_drop_train(x,
-                     mask_prob,
-                     alpha_min,
-                     alpha_max,
-                     beta_min,
-                     beta_max,
-                     rng=None):
+def shake_drop_train(x, mask_prob, alpha_min, alpha_max, beta_min, beta_max, rng=None):
     """ShakeDrop training pass.
 
     See https://arxiv.org/abs/1802.02375
@@ -160,24 +151,20 @@ def shake_drop_train(x,
     mask = mask.astype(jnp.float32)
 
     alpha_values = jax.random.uniform(
-        alpha_key,
-        rnd_shape,
-        dtype=jnp.float32,
-        minval=alpha_min,
-        maxval=alpha_max)
+        alpha_key, rnd_shape, dtype=jnp.float32, minval=alpha_min, maxval=alpha_max
+    )
     beta_values = jax.random.uniform(
-        beta_key, rnd_shape, dtype=jnp.float32, minval=beta_min, maxval=beta_max)
+        beta_key, rnd_shape, dtype=jnp.float32, minval=beta_min, maxval=beta_max
+    )
     # See Eqn 6 in https://arxiv.org/abs/1802.02375.
     rand_forward = mask + alpha_values - mask * alpha_values
     rand_backward = mask + beta_values - mask * beta_values
     return x * rand_backward + jax.lax.stop_gradient(
-        x * rand_forward - x * rand_backward)
+        x * rand_forward - x * rand_backward
+    )
 
 
-def shake_drop_eval(x,
-                    mask_prob,
-                    alpha_min,
-                    alpha_max):
+def shake_drop_eval(x, mask_prob, alpha_min, alpha_max):
     """ShakeDrop eval pass.
 
     See https://arxiv.org/abs/1802.02375
@@ -196,10 +183,7 @@ def shake_drop_eval(x,
     return (mask_prob + expected_alpha - mask_prob * expected_alpha) * x
 
 
-def activation(x,
-               train,
-               apply_relu=True,
-               name=''):
+def activation(x, train, apply_relu=True, name=""):
     x = nn.GroupNorm(name=name, epsilon=1e-5, num_groups=min(x.shape[-1] // 4, 32))(x)
     if apply_relu:
         x = jax.nn.relu(x)
@@ -228,12 +212,15 @@ def _output_add(block_x, orig_x):
 
 class GaussianFourierProjection(nn.Module):
     """Gaussian Fourier embeddings for noise levels."""
+
     embedding_size: int = 256
     scale: float = 1.0
 
     @nn.compact
     def __call__(self, x):
-        W = self.param('W', jax.nn.initializers.normal(stddev=self.scale), (self.embedding_size,))
+        W = self.param(
+            "W", jax.nn.initializers.normal(stddev=self.scale), (self.embedding_size,)
+        )
         W = jax.lax.stop_gradient(W)
         x_proj = x[:, None] * W[None, :] * 2 * jnp.pi
         return jnp.concatenate([jnp.sin(x_proj), jnp.cos(x_proj)], axis=-1)
@@ -241,6 +228,7 @@ class GaussianFourierProjection(nn.Module):
 
 class WideResnetBlock(nn.Module):
     """Defines a single WideResnetBlock."""
+
     channels: int
     strides: Tuple[int] = (1, 1)
     activate_before_residual: bool = False
@@ -248,38 +236,43 @@ class WideResnetBlock(nn.Module):
     @nn.compact
     def __call__(self, x, temb=None, train=True):
         if self.activate_before_residual:
-            x = activation(x, train, name='init_bn')
+            x = activation(x, train, name="init_bn")
             orig_x = x
         else:
             orig_x = x
 
         block_x = x
         if not self.activate_before_residual:
-            block_x = activation(block_x, train, name='init_bn')
+            block_x = activation(block_x, train, name="init_bn")
 
         block_x = nn.Conv(
-            self.channels, (3, 3),
+            self.channels,
+            (3, 3),
             self.strides,
-            padding='SAME',
+            padding="SAME",
             use_bias=False,
             kernel_init=conv_kernel_init_fn,
-            name='conv1')(block_x)
+            name="conv1",
+        )(block_x)
 
         if temb is not None:
             block_x += nn.Dense(self.channels)(nn.swish(temb))[:, None, None, :]
-        block_x = activation(block_x, train=train, name='bn_2')
+        block_x = activation(block_x, train=train, name="bn_2")
         block_x = nn.Conv(
-            self.channels, (3, 3),
-            padding='SAME',
+            self.channels,
+            (3, 3),
+            padding="SAME",
             use_bias=False,
             kernel_init=conv_kernel_init_fn,
-            name='conv2')(block_x)
+            name="conv2",
+        )(block_x)
 
         return _output_add(block_x, orig_x)
 
 
 class WideResnetGroup(nn.Module):
     """Defines a WideResnetGroup."""
+
     blocks_per_group: int
     channels: int
     strides: Tuple[int] = (1, 1)
@@ -288,14 +281,17 @@ class WideResnetGroup(nn.Module):
     @nn.compact
     def __call__(self, x, temb=None, train=True):
         for i in range(self.blocks_per_group):
-            x = WideResnetBlock(self.channels, self.strides if i == 0 else (1, 1),
-                                activate_before_residual=self.activate_before_residual and not i,
-                                )(x, temb, train)
+            x = WideResnetBlock(
+                self.channels,
+                self.strides if i == 0 else (1, 1),
+                activate_before_residual=self.activate_before_residual and not i,
+            )(x, temb, train)
         return x
 
 
 class WideResnet(nn.Module):
     """Defines the WideResnet Model."""
+
     blocks_per_group: int
     channel_multiplier: int
     num_outputs: int
@@ -304,18 +300,33 @@ class WideResnet(nn.Module):
     def __call__(self, x, sigmas, train=True):
         # per image standardization
         N = np.prod(x.shape[1:])
-        x = (x - jnp.mean(x, axis=(1, 2, 3), keepdims=True)) / jnp.maximum(jnp.std(x, axis=(1, 2, 3), keepdims=True),
-                                                                           1. / np.sqrt(N))
+        x = (x - jnp.mean(x, axis=(1, 2, 3), keepdims=True)) / jnp.maximum(
+            jnp.std(x, axis=(1, 2, 3), keepdims=True), 1.0 / np.sqrt(N)
+        )
         temb = GaussianFourierProjection(embedding_size=128, scale=16)(jnp.log(sigmas))
         temb = nn.Dense(128 * 4)(temb)
         temb = nn.Dense(128 * 4)(nn.swish(temb))
 
-        x = nn.Conv(16, (3, 3), padding='SAME', name='init_conv', kernel_init=conv_kernel_init_fn, use_bias=False)(x)
-        x = WideResnetGroup(self.blocks_per_group, 16 * self.channel_multiplier,
-                            activate_before_residual=True)(x, temb, train)
-        x = WideResnetGroup(self.blocks_per_group, 32 * self.channel_multiplier, (2, 2))(x, temb, train)
-        x = WideResnetGroup(self.blocks_per_group, 64 * self.channel_multiplier, (2, 2))(x, temb, train)
-        x = activation(x, train=train, name='pre-pool-bn')
+        x = nn.Conv(
+            16,
+            (3, 3),
+            padding="SAME",
+            name="init_conv",
+            kernel_init=conv_kernel_init_fn,
+            use_bias=False,
+        )(x)
+        x = WideResnetGroup(
+            self.blocks_per_group,
+            16 * self.channel_multiplier,
+            activate_before_residual=True,
+        )(x, temb, train)
+        x = WideResnetGroup(
+            self.blocks_per_group, 32 * self.channel_multiplier, (2, 2)
+        )(x, temb, train)
+        x = WideResnetGroup(
+            self.blocks_per_group, 64 * self.channel_multiplier, (2, 2)
+        )(x, temb, train)
+        x = activation(x, train=train, name="pre-pool-bn")
         x = nn.avg_pool(x, x.shape[1:3])
         x = x.reshape((x.shape[0], -1))
         x = nn.Dense(self.num_outputs, kernel_init=dense_layer_init_fn)(x)

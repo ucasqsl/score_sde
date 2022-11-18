@@ -47,7 +47,7 @@ def register_model(cls=None, *, name=None):
         else:
             local_name = name
         if local_name in _MODELS:
-            raise ValueError(f'Already registered model with name: {local_name}')
+            raise ValueError(f"Already registered model with name: {local_name}")
         _MODELS[local_name] = cls
         return cls
 
@@ -70,8 +70,11 @@ def get_sigmas(config):
     """
     sigmas = jnp.exp(
         jnp.linspace(
-            jnp.log(config.model.sigma_max), jnp.log(config.model.sigma_min),
-            config.model.num_scales))
+            jnp.log(config.model.sigma_max),
+            jnp.log(config.model.sigma_min),
+            config.model.num_scales,
+        )
+    )
 
     return sigmas
 
@@ -84,36 +87,43 @@ def get_ddpm_params(config):
     beta_end = config.model.beta_max / config.model.num_scales
     betas = np.linspace(beta_start, beta_end, num_diffusion_timesteps, dtype=np.float64)
 
-    alphas = 1. - betas
+    alphas = 1.0 - betas
     alphas_cumprod = np.cumprod(alphas, axis=0)
     sqrt_alphas_cumprod = np.sqrt(alphas_cumprod)
-    sqrt_1m_alphas_cumprod = np.sqrt(1. - alphas_cumprod)
+    sqrt_1m_alphas_cumprod = np.sqrt(1.0 - alphas_cumprod)
 
     return {
-        'betas': betas,
-        'alphas': alphas,
-        'alphas_cumprod': alphas_cumprod,
-        'sqrt_alphas_cumprod': sqrt_alphas_cumprod,
-        'sqrt_1m_alphas_cumprod': sqrt_1m_alphas_cumprod,
-        'beta_min': beta_start * (num_diffusion_timesteps - 1),
-        'beta_max': beta_end * (num_diffusion_timesteps - 1),
-        'num_diffusion_timesteps': num_diffusion_timesteps
+        "betas": betas,
+        "alphas": alphas,
+        "alphas_cumprod": alphas_cumprod,
+        "sqrt_alphas_cumprod": sqrt_alphas_cumprod,
+        "sqrt_1m_alphas_cumprod": sqrt_1m_alphas_cumprod,
+        "beta_min": beta_start * (num_diffusion_timesteps - 1),
+        "beta_max": beta_end * (num_diffusion_timesteps - 1),
+        "num_diffusion_timesteps": num_diffusion_timesteps,
     }
 
 
 def init_model(rng, config):
-    """ Initialize a `flax.linen.Module` model. """
+    """Initialize a `flax.linen.Module` model."""
     model_name = config.model.name
     model_def = functools.partial(get_model(model_name), config=config)
-    input_shape = (jax.local_device_count(), config.data.image_size, config.data.image_size, config.data.num_channels)
+    input_shape = (
+        jax.local_device_count(),
+        config.data.image_size,
+        config.data.image_size,
+        config.data.num_channels,
+    )
     label_shape = input_shape[:1]
     fake_input = jnp.zeros(input_shape)
     fake_label = jnp.zeros(label_shape, dtype=jnp.int32)
     params_rng, dropout_rng = jax.random.split(rng)
     model = model_def()
-    variables = model.init({'params': params_rng, 'dropout': dropout_rng}, fake_input, fake_label)
+    variables = model.init(
+        {"params": params_rng, "dropout": dropout_rng}, fake_input, fake_label
+    )
     # Variables is a `flax.FrozenDict`. It is immutable and respects functional programming
-    init_model_state, initial_params = variables.pop('params')
+    init_model_state, initial_params = variables.pop("params")
     return model, init_model_state, initial_params
 
 
@@ -142,12 +152,14 @@ def get_model_fn(model, params, states, train=False):
         Returns:
           A tuple of (model output, new mutable states)
         """
-        variables = {'params': params, **states}
+        variables = {"params": params, **states}
         if not train:
             return model.apply(variables, x, labels, train=False, mutable=False), states
         else:
-            rngs = {'dropout': rng}
-            return model.apply(variables, x, labels, train=True, mutable=list(states.keys()), rngs=rngs)
+            rngs = {"dropout": rng}
+            return model.apply(
+                variables, x, labels, train=True, mutable=list(states.keys()), rngs=rngs
+            )
             # if states:
             #   return outputs
             # else:
@@ -156,7 +168,46 @@ def get_model_fn(model, params, states, train=False):
     return model_fn
 
 
-def get_score_fn(sde, model, params, states, train=False, continuous=False, return_state=False):
+def get_noise_fn(
+    sde, model, params, states, train=False, continuous=False, return_state=False
+):
+    """Wraps `noise_fn` so that the model output corresponds to a real time-dependent noise function.
+
+    Args:
+      sde: An `sde_lib.SDE` object that represents the forward SDE.
+      model: A score model.
+      train: `True` for training and `False` for evaluation.
+      continuous: If `True`, the score-based model is expected to directly take continuous time steps.
+
+    Returns:
+      A score function.
+    """
+    model_fn = get_model_fn(model, params, states, train=train)
+
+    if isinstance(sde, sde_lib.VPSDE) and continuous:
+
+        def noise_fn(x, t, rng=None):
+            # For VP-trained models, t=0 corresponds to the lowest noise level
+            # The maximum value of time embedding is assumed to 999 for
+            # continuously-trained models.
+            labels = t * 999
+            noise, state = model_fn(x, labels, rng)
+            if return_state:
+                return noise, state
+            else:
+                return noise
+
+    else:
+        raise NotImplementedError(
+            f"SDE class {sde.__class__.__name__} not yet supported."
+        )
+
+    return noise_fn
+
+
+def get_score_fn(
+    sde, model, params, states, train=False, continuous=False, return_state=False
+):
     """Wraps `score_fn` so that the model output corresponds to a real time-dependent score function.
 
     Args:
@@ -174,6 +225,7 @@ def get_score_fn(sde, model, params, states, train=False, continuous=False, retu
     model_fn = get_model_fn(model, params, states, train=train)
 
     if isinstance(sde, sde_lib.VPSDE) or isinstance(sde, sde_lib.subVPSDE):
+
         def score_fn(x, t, rng=None):
             # Scale neural network output by standard deviation and flip sign
             if continuous or isinstance(sde, sde_lib.subVPSDE):
@@ -189,13 +241,14 @@ def get_score_fn(sde, model, params, states, train=False, continuous=False, retu
                 model, state = model_fn(x, labels, rng)
                 std = sde.sqrt_1m_alphas_cumprod[labels.astype(jnp.int32)]
 
-            score = batch_mul(-model, 1. / std)
+            score = batch_mul(-model, 1.0 / std)
             if return_state:
                 return score, state
             else:
                 return score
 
     elif isinstance(sde, sde_lib.VESDE):
+
         def score_fn(x, t, rng=None):
             if continuous:
                 labels = sde.marginal_prob(jnp.zeros_like(x), t)[1]
@@ -212,7 +265,9 @@ def get_score_fn(sde, model, params, states, train=False, continuous=False, retu
                 return score
 
     else:
-        raise NotImplementedError(f"SDE class {sde.__class__.__name__} not yet supported.")
+        raise NotImplementedError(
+            f"SDE class {sde.__class__.__name__} not yet supported."
+        )
 
     return score_fn
 
@@ -241,20 +296,21 @@ def create_classifier(prng_key, batch_size, ckpt_path):
     """
     input_shape = (batch_size, 32, 32, 3)
     classifier = wideresnet_noise_conditional.WideResnet(
-        blocks_per_group=4,
-        channel_multiplier=10,
-        num_outputs=10
+        blocks_per_group=4, channel_multiplier=10, num_outputs=10
     )
-    initial_variables = classifier.init({'params': prng_key, 'dropout': jax.random.PRNGKey(0)},
-                                        jnp.ones(input_shape, dtype=jnp.float32),
-                                        jnp.ones((batch_size,), dtype=jnp.float32), train=False)
-    model_state, init_params = initial_variables.pop('params')
+    initial_variables = classifier.init(
+        {"params": prng_key, "dropout": jax.random.PRNGKey(0)},
+        jnp.ones(input_shape, dtype=jnp.float32),
+        jnp.ones((batch_size,), dtype=jnp.float32),
+        train=False,
+    )
+    model_state, init_params = initial_variables.pop("params")
     classifier_params = checkpoints.restore_checkpoint(ckpt_path, init_params)
     return classifier, classifier_params
 
 
 def get_logit_fn(classifier, classifier_params):
-    """ Create a logit function for the classifier. """
+    """Create a logit function for the classifier."""
 
     def preprocess(data):
         image_mean = jnp.asarray([[[0.49139968, 0.48215841, 0.44653091]]])
@@ -272,19 +328,27 @@ def get_logit_fn(classifier, classifier_params):
           logits: The logits given by the noise-conditional classifier.
         """
         data = preprocess(data)
-        logits = classifier.apply({'params': classifier_params}, data, ve_noise_scale, train=False, mutable=False)
+        logits = classifier.apply(
+            {"params": classifier_params},
+            data,
+            ve_noise_scale,
+            train=False,
+            mutable=False,
+        )
         return logits
 
     return logit_fn
 
 
 def get_classifier_grad_fn(logit_fn):
-    """Create the gradient function for the classifier in use of class-conditional sampling. """
+    """Create the gradient function for the classifier in use of class-conditional sampling."""
 
     def grad_fn(data, ve_noise_scale, labels):
         def prob_fn(data):
             logits = logit_fn(data, ve_noise_scale)
-            prob = jax.nn.log_softmax(logits, axis=-1)[jnp.arange(labels.shape[0]), labels].sum()
+            prob = jax.nn.log_softmax(logits, axis=-1)[
+                jnp.arange(labels.shape[0]), labels
+            ].sum()
             return prob
 
         return jax.grad(prob_fn)(data)

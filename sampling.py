@@ -16,19 +16,28 @@
 # pylint: skip-file
 # pytype: skip-file
 """Various sampling methods."""
-import abc
 import functools
 
-import flax
 import jax
 import jax.numpy as jnp
 import jax.random as random
-from scipy import integrate
+import abc
+import flax
 
+from models.utils import (
+    from_flattened_numpy,
+    to_flattened_numpy,
+    get_score_fn,
+    get_noise_fn,
+)
+from scipy import integrate
 import sde_lib
+from utils import batch_mul, batch_add
+
 from models import utils as mutils
+from dpm_solver import NoiseScheduleVP, model_wrapper, DPM_Solver
+
 from models.utils import from_flattened_numpy, to_flattened_numpy, get_score_fn
-from utils import batch_mul
 
 _CORRECTORS = {}
 _PREDICTORS = {}
@@ -43,7 +52,7 @@ def register_predictor(cls=None, *, name=None):
         else:
             local_name = name
         if local_name in _PREDICTORS:
-            raise ValueError(f'Already registered model with name: {local_name}')
+            raise ValueError(f"Already registered model with name: {local_name}")
         _PREDICTORS[local_name] = cls
         return cls
 
@@ -62,7 +71,7 @@ def register_corrector(cls=None, *, name=None):
         else:
             local_name = name
         if local_name in _CORRECTORS:
-            raise ValueError(f'Already registered model with name: {local_name}')
+            raise ValueError(f"Already registered model with name: {local_name}")
         _CORRECTORS[local_name] = cls
         return cls
 
@@ -98,29 +107,51 @@ def get_sampling_fn(config, sde, model, shape, inverse_scaler, eps):
 
     sampler_name = config.sampling.method
     # Probability flow ODE sampling with black-box ODE solvers
-    if sampler_name.lower() == 'ode':
-        sampling_fn = get_ode_sampler(sde=sde,
-                                      model=model,
-                                      shape=shape,
-                                      inverse_scaler=inverse_scaler,
-                                      denoise=config.sampling.noise_removal,
-                                      eps=eps)
+    if sampler_name.lower() == "ode":
+        sampling_fn = get_ode_sampler(
+            sde=sde,
+            model=model,
+            shape=shape,
+            inverse_scaler=inverse_scaler,
+            denoise=config.sampling.noise_removal,
+            eps=eps,
+            rtol=config.sampling.rk45_rtol,
+            atol=config.sampling.rk45_atol,
+        )
     # Predictor-Corrector sampling. Predictor-only and Corrector-only samplers are special cases.
-    elif sampler_name.lower() == 'pc':
+    elif sampler_name.lower() == "pc":
         predictor = get_predictor(config.sampling.predictor.lower())
         corrector = get_corrector(config.sampling.corrector.lower())
-        sampling_fn = get_pc_sampler(sde=sde,
-                                     model=model,
-                                     shape=shape,
-                                     predictor=predictor,
-                                     corrector=corrector,
-                                     inverse_scaler=inverse_scaler,
-                                     snr=config.sampling.snr,
-                                     n_steps=config.sampling.n_steps_each,
-                                     probability_flow=config.sampling.probability_flow,
-                                     continuous=config.training.continuous,
-                                     denoise=config.sampling.noise_removal,
-                                     eps=eps)
+        sampling_fn = get_pc_sampler(
+            sde=sde,
+            model=model,
+            shape=shape,
+            predictor=predictor,
+            corrector=corrector,
+            inverse_scaler=inverse_scaler,
+            snr=config.sampling.snr,
+            n_steps=config.sampling.n_steps_each,
+            probability_flow=config.sampling.probability_flow,
+            continuous=config.training.continuous,
+            denoise=config.sampling.noise_removal,
+            eps=eps,
+        )
+    elif sampler_name.lower() == "dpm_solver":
+        sampling_fn = get_dpm_solver_sampler(
+            sde=sde,
+            model=model,
+            shape=shape,
+            inverse_scaler=inverse_scaler,
+            steps=config.sampling.steps,
+            eps=eps,
+            skip_type=config.sampling.skip_type,
+            method=config.sampling.dpm_solver_method,
+            order=config.sampling.dpm_solver_order,
+            denoise=config.sampling.noise_removal,
+            predict_x0=config.sampling.predict_x0,
+            thresholding=config.sampling.thresholding,
+            rtol=config.sampling.rtol,
+        )
     else:
         raise ValueError(f"Sampler name {sampler_name} unknown.")
 
@@ -179,13 +210,13 @@ class Corrector(abc.ABC):
         pass
 
 
-@register_predictor(name='euler_maruyama')
+@register_predictor(name="euler_maruyama")
 class EulerMaruyamaPredictor(Predictor):
     def __init__(self, sde, score_fn, probability_flow=False):
         super().__init__(sde, score_fn, probability_flow)
 
     def update_fn(self, rng, x, t):
-        dt = -1. / self.rsde.N
+        dt = -1.0 / self.rsde.N
         z = random.normal(rng, x.shape)
         drift, diffusion = self.rsde.sde(x, t)
         x_mean = x + drift * dt
@@ -193,7 +224,7 @@ class EulerMaruyamaPredictor(Predictor):
         return x, x_mean
 
 
-@register_predictor(name='reverse_diffusion')
+@register_predictor(name="reverse_diffusion")
 class ReverseDiffusionPredictor(Predictor):
     def __init__(self, sde, score_fn, probability_flow=False):
         super().__init__(sde, score_fn, probability_flow)
@@ -206,24 +237,32 @@ class ReverseDiffusionPredictor(Predictor):
         return x, x_mean
 
 
-@register_predictor(name='ancestral_sampling')
+@register_predictor(name="ancestral_sampling")
 class AncestralSamplingPredictor(Predictor):
     """The ancestral sampling predictor. Currently only supports VE/VP SDEs."""
 
     def __init__(self, sde, score_fn, probability_flow=False):
         super().__init__(sde, score_fn, probability_flow)
         if not isinstance(sde, sde_lib.VPSDE) and not isinstance(sde, sde_lib.VESDE):
-            raise NotImplementedError(f"SDE class {sde.__class__.__name__} not yet supported.")
-        assert not probability_flow, "Probability flow not supported by ancestral sampling"
+            raise NotImplementedError(
+                f"SDE class {sde.__class__.__name__} not yet supported."
+            )
+        assert (
+            not probability_flow
+        ), "Probability flow not supported by ancestral sampling"
 
     def vesde_update_fn(self, rng, x, t):
         sde = self.sde
         timestep = (t * (sde.N - 1) / sde.T).astype(jnp.int32)
         sigma = sde.discrete_sigmas[timestep]
-        adjacent_sigma = jnp.where(timestep == 0, jnp.zeros(t.shape), sde.discrete_sigmas[timestep - 1])
+        adjacent_sigma = jnp.where(
+            timestep == 0, jnp.zeros(t.shape), sde.discrete_sigmas[timestep - 1]
+        )
         score = self.score_fn(x, t)
-        x_mean = x + batch_mul(score, sigma ** 2 - adjacent_sigma ** 2)
-        std = jnp.sqrt((adjacent_sigma ** 2 * (sigma ** 2 - adjacent_sigma ** 2)) / (sigma ** 2))
+        x_mean = x + batch_mul(score, sigma**2 - adjacent_sigma**2)
+        std = jnp.sqrt(
+            (adjacent_sigma**2 * (sigma**2 - adjacent_sigma**2)) / (sigma**2)
+        )
         noise = random.normal(rng, x.shape)
         x = x_mean + batch_mul(std, noise)
         return x, x_mean
@@ -233,7 +272,7 @@ class AncestralSamplingPredictor(Predictor):
         timestep = (t * (sde.N - 1) / sde.T).astype(jnp.int32)
         beta = sde.discrete_betas[timestep]
         score = self.score_fn(x, t)
-        x_mean = batch_mul((x + batch_mul(beta, score)), 1. / jnp.sqrt(1. - beta))
+        x_mean = batch_mul((x + batch_mul(beta, score)), 1.0 / jnp.sqrt(1.0 - beta))
         noise = random.normal(rng, x.shape)
         x = x_mean + batch_mul(jnp.sqrt(beta), noise)
         return x, x_mean
@@ -245,7 +284,7 @@ class AncestralSamplingPredictor(Predictor):
             return self.vpsde_update_fn(rng, x, t)
 
 
-@register_predictor(name='none')
+@register_predictor(name="none")
 class NonePredictor(Predictor):
     """An empty predictor that does nothing."""
 
@@ -256,21 +295,26 @@ class NonePredictor(Predictor):
         return x, x
 
 
-@register_corrector(name='langevin')
+@register_corrector(name="langevin")
 class LangevinCorrector(Corrector):
     def __init__(self, sde, score_fn, snr, n_steps):
         super().__init__(sde, score_fn, snr, n_steps)
-        if not isinstance(sde, sde_lib.VPSDE) \
-                and not isinstance(sde, sde_lib.VESDE) \
-                and not isinstance(sde, sde_lib.subVPSDE):
-            raise NotImplementedError(f"SDE class {sde.__class__.__name__} not yet supported.")
+        if (
+            not isinstance(sde, sde_lib.VPSDE)
+            and not isinstance(sde, sde_lib.VESDE)
+            and not isinstance(sde, sde_lib.subVPSDE)
+        ):
+            raise NotImplementedError(
+                f"SDE class {sde.__class__.__name__} not yet supported."
+            )
 
     def update_fn(self, rng, x, t):
         sde = self.sde
         score_fn = self.score_fn
         n_steps = self.n_steps
         target_snr = self.snr
-        if isinstance(sde, sde_lib.VPSDE): # or isinstance(sde, sde_lib.subVPSDE):
+        # or isinstance(sde, sde_lib.subVPSDE):
+        if isinstance(sde, sde_lib.VPSDE):
             timestep = (t * (sde.N - 1) / sde.T).astype(jnp.int32)
             alpha = sde.alphas[timestep]
         else:
@@ -282,11 +326,13 @@ class LangevinCorrector(Corrector):
             rng, step_rng = jax.random.split(rng)
             noise = jax.random.normal(step_rng, x.shape)
             grad_norm = jnp.linalg.norm(
-                grad.reshape((grad.shape[0], -1)), axis=-1).mean()
-            grad_norm = jax.lax.pmean(grad_norm, axis_name='batch')
+                grad.reshape((grad.shape[0], -1)), axis=-1
+            ).mean()
+            grad_norm = jax.lax.pmean(grad_norm, axis_name="batch")
             noise_norm = jnp.linalg.norm(
-                noise.reshape((noise.shape[0], -1)), axis=-1).mean()
-            noise_norm = jax.lax.pmean(noise_norm, axis_name='batch')
+                noise.reshape((noise.shape[0], -1)), axis=-1
+            ).mean()
+            noise_norm = jax.lax.pmean(noise_norm, axis_name="batch")
             step_size = (target_snr * noise_norm / grad_norm) ** 2 * 2 * alpha
             x_mean = x + batch_mul(step_size, grad)
             x = x_mean + batch_mul(noise, jnp.sqrt(step_size * 2))
@@ -296,7 +342,7 @@ class LangevinCorrector(Corrector):
         return x, x_mean
 
 
-@register_corrector(name='ald')
+@register_corrector(name="ald")
 class AnnealedLangevinDynamics(Corrector):
     """The original annealed Langevin dynamics predictor in NCSN/NCSNv2.
 
@@ -305,17 +351,22 @@ class AnnealedLangevinDynamics(Corrector):
 
     def __init__(self, sde, score_fn, snr, n_steps):
         super().__init__(sde, score_fn, snr, n_steps)
-        if not isinstance(sde, sde_lib.VPSDE) \
-                and not isinstance(sde, sde_lib.VESDE) \
-                and not isinstance(sde, sde_lib.subVPSDE):
-            raise NotImplementedError(f"SDE class {sde.__class__.__name__} not yet supported.")
+        if (
+            not isinstance(sde, sde_lib.VPSDE)
+            and not isinstance(sde, sde_lib.VESDE)
+            and not isinstance(sde, sde_lib.subVPSDE)
+        ):
+            raise NotImplementedError(
+                f"SDE class {sde.__class__.__name__} not yet supported."
+            )
 
     def update_fn(self, rng, x, t):
         sde = self.sde
         score_fn = self.score_fn
         n_steps = self.n_steps
         target_snr = self.snr
-        if isinstance(sde, sde_lib.VPSDE):# or isinstance(sde, sde_lib.subVPSDE):
+        # or isinstance(sde, sde_lib.subVPSDE):
+        if isinstance(sde, sde_lib.VPSDE):
             timestep = (t * (sde.N - 1) / sde.T).astype(jnp.int32)
             alpha = sde.alphas[timestep]
         else:
@@ -337,7 +388,7 @@ class AnnealedLangevinDynamics(Corrector):
         return x, x_mean
 
 
-@register_corrector(name='none')
+@register_corrector(name="none")
 class NoneCorrector(Corrector):
     """An empty corrector that does nothing."""
 
@@ -348,9 +399,18 @@ class NoneCorrector(Corrector):
         return x, x
 
 
-def shared_predictor_update_fn(rng, state, x, t, sde, model, predictor, probability_flow, continuous):
+def shared_predictor_update_fn(
+    rng, state, x, t, sde, model, predictor, probability_flow, continuous
+):
     """A wrapper that configures and returns the update function of predictors."""
-    score_fn = mutils.get_score_fn(sde, model, state.params_ema, state.model_state, train=False, continuous=continuous)
+    score_fn = mutils.get_score_fn(
+        sde,
+        model,
+        state.params_ema,
+        state.model_state,
+        train=False,
+        continuous=continuous,
+    )
     if predictor is None:
         # Corrector-only sampler
         predictor_obj = NonePredictor(sde, score_fn, probability_flow)
@@ -359,9 +419,18 @@ def shared_predictor_update_fn(rng, state, x, t, sde, model, predictor, probabil
     return predictor_obj.update_fn(rng, x, t)
 
 
-def shared_corrector_update_fn(rng, state, x, t, sde, model, corrector, continuous, snr, n_steps):
+def shared_corrector_update_fn(
+    rng, state, x, t, sde, model, corrector, continuous, snr, n_steps
+):
     """A wrapper tha configures and returns the update function of correctors."""
-    score_fn = mutils.get_score_fn(sde, model, state.params_ema, state.model_state, train=False, continuous=continuous)
+    score_fn = mutils.get_score_fn(
+        sde,
+        model,
+        state.params_ema,
+        state.model_state,
+        train=False,
+        continuous=continuous,
+    )
     if corrector is None:
         # Predictor-only sampler
         corrector_obj = NoneCorrector(sde, score_fn, snr, n_steps)
@@ -370,9 +439,20 @@ def shared_corrector_update_fn(rng, state, x, t, sde, model, corrector, continuo
     return corrector_obj.update_fn(rng, x, t)
 
 
-def get_pc_sampler(sde, model, shape, predictor, corrector, inverse_scaler, snr,
-                   n_steps=1, probability_flow=False, continuous=False,
-                   denoise=True, eps=1e-3):
+def get_pc_sampler(
+    sde,
+    model,
+    shape,
+    predictor,
+    corrector,
+    inverse_scaler,
+    snr,
+    n_steps=1,
+    probability_flow=False,
+    continuous=False,
+    denoise=True,
+    eps=1e-3,
+):
     """Create a Predictor-Corrector (PC) sampler.
 
     Args:
@@ -394,22 +474,26 @@ def get_pc_sampler(sde, model, shape, predictor, corrector, inverse_scaler, snr,
       the number of function evaluations during sampling.
     """
     # Create predictor & corrector update functions
-    predictor_update_fn = functools.partial(shared_predictor_update_fn,
-                                            sde=sde,
-                                            model=model,
-                                            predictor=predictor,
-                                            probability_flow=probability_flow,
-                                            continuous=continuous)
-    corrector_update_fn = functools.partial(shared_corrector_update_fn,
-                                            sde=sde,
-                                            model=model,
-                                            corrector=corrector,
-                                            continuous=continuous,
-                                            snr=snr,
-                                            n_steps=n_steps)
+    predictor_update_fn = functools.partial(
+        shared_predictor_update_fn,
+        sde=sde,
+        model=model,
+        predictor=predictor,
+        probability_flow=probability_flow,
+        continuous=continuous,
+    )
+    corrector_update_fn = functools.partial(
+        shared_corrector_update_fn,
+        sde=sde,
+        model=model,
+        corrector=corrector,
+        continuous=continuous,
+        snr=snr,
+        n_steps=n_steps,
+    )
 
     def pc_sampler(rng, state):
-        """ The PC sampler funciton.
+        """The PC sampler funciton.
 
         Args:
           rng: A JAX random state
@@ -436,11 +520,20 @@ def get_pc_sampler(sde, model, shape, predictor, corrector, inverse_scaler, snr,
         # Denoising is equivalent to running one predictor step without adding noise.
         return inverse_scaler(x_mean if denoise else x), sde.N * (n_steps + 1)
 
-    return jax.pmap(pc_sampler, axis_name='batch')
+    return jax.pmap(pc_sampler, axis_name="batch")
 
 
-def get_ode_sampler(sde, model, shape, inverse_scaler,
-                    denoise=False, rtol=1e-5, atol=1e-5, method='RK45', eps=1e-3):
+def get_ode_sampler(
+    sde,
+    model,
+    shape,
+    inverse_scaler,
+    denoise=False,
+    rtol=1e-5,
+    atol=1e-5,
+    method="RK45",
+    eps=1e-3,
+):
     """Probability flow ODE sampler with the black-box ODE solver.
 
     Args:
@@ -462,7 +555,14 @@ def get_ode_sampler(sde, model, shape, inverse_scaler,
 
     @jax.pmap
     def denoise_update_fn(rng, state, x):
-        score_fn = get_score_fn(sde, model, state.params_ema, state.model_state, train=False, continuous=True)
+        score_fn = get_score_fn(
+            sde,
+            model,
+            state.params_ema,
+            state.model_state,
+            train=False,
+            continuous=True,
+        )
         # Reverse diffusion predictor for denoising
         predictor_obj = ReverseDiffusionPredictor(sde, score_fn, probability_flow=False)
         vec_eps = jnp.ones((x.shape[0],)) * eps
@@ -472,7 +572,14 @@ def get_ode_sampler(sde, model, shape, inverse_scaler,
     @jax.pmap
     def drift_fn(state, x, t):
         """Get the drift function of the reverse-time SDE."""
-        score_fn = get_score_fn(sde, model, state.params_ema, state.model_state, train=False, continuous=True)
+        score_fn = get_score_fn(
+            sde,
+            model,
+            state.params_ema,
+            state.model_state,
+            train=False,
+            continuous=True,
+        )
         rsde = sde.reverse(score_fn, probability_flow=True)
         return rsde.sde(x, t)[0]
 
@@ -502,8 +609,14 @@ def get_ode_sampler(sde, model, shape, inverse_scaler,
             return to_flattened_numpy(drift)
 
         # Black-box ODE solver for the probability flow ODE
-        solution = integrate.solve_ivp(ode_func, (sde.T, eps), to_flattened_numpy(x),
-                                       rtol=rtol, atol=atol, method=method)
+        solution = integrate.solve_ivp(
+            ode_func,
+            (sde.T, eps),
+            to_flattened_numpy(x),
+            rtol=rtol,
+            atol=atol,
+            method=method,
+        )
         nfe = solution.nfev
         x = jnp.asarray(solution.y[:, -1]).reshape((jax.local_device_count(),) + shape)
 
@@ -517,3 +630,82 @@ def get_ode_sampler(sde, model, shape, inverse_scaler,
         return x, nfe
 
     return ode_sampler
+
+
+def get_dpm_solver_sampler(
+    sde,
+    model,
+    shape,
+    inverse_scaler,
+    steps=10,
+    eps=1e-3,
+    skip_type="logSNR",
+    method="singlestep",
+    order=3,
+    denoise=False,
+    predict_x0=False,
+    thresholding=False,
+    rtol=0.05,
+    atol=0.0078,
+):
+    """Create a Predictor-Corrector (PC) sampler.
+
+    Args:
+      sde: An `sde_lib.SDE` object representing the forward SDE.
+      shape: A sequence of integers. The expected shape of a single sample.
+      predictor: A subclass of `sampling.Predictor` representing the predictor algorithm.
+      corrector: A subclass of `sampling.Corrector` representing the corrector algorithm.
+      inverse_scaler: The inverse data normalizer.
+      snr: A `float` number. The signal-to-noise ratio for configuring correctors.
+      n_steps: An integer. The number of corrector steps per predictor update.
+      probability_flow: If `True`, solve the reverse-time probability flow ODE when running the predictor.
+      continuous: `True` indicates that the score model was continuously trained.
+      denoise: If `True`, add one-step denoising to the final samples.
+      eps: A `float` number. The reverse-time SDE and ODE are integrated to `epsilon` to avoid numerical issues.
+      device: PyTorch device.
+
+    Returns:
+      A sampling function that returns samples and the number of function evaluations during sampling.
+    """
+    ns = NoiseScheduleVP(
+        "linear", continuous_beta_0=sde.beta_0, continuous_beta_1=sde.beta_1
+    )
+
+    def dpm_solver_sampler(rng, state):
+        """The DPM-Solver sampler funciton.
+
+        Args:
+          rng: A JAX random state
+          state: A `flax.struct.dataclass` object that represents the training state of a score-based model.
+        Returns:
+          Samples, number of function evaluations
+        """
+        noise_pred_fn = get_noise_fn(
+            sde,
+            model,
+            state.params_ema,
+            state.model_state,
+            train=False,
+            continuous=True,
+        )
+        dpm_solver = DPM_Solver(
+            noise_pred_fn, ns, predict_x0=predict_x0, thresholding=thresholding
+        )
+        # Initial sample
+        rng, step_rng = random.split(rng)
+        x = sde.prior_sampling(step_rng, shape)
+        x = dpm_solver.sample(
+            x,
+            steps=steps - 1 if denoise else steps,
+            t_start=sde.T,
+            t_end=eps,
+            order=order,
+            skip_type=skip_type,
+            method=method,
+            denoise=denoise,
+            atol=atol,
+            rtol=rtol,
+        )
+        return inverse_scaler(x), steps
+
+    return jax.pmap(dpm_solver_sampler, axis_name="batch")

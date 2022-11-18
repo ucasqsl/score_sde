@@ -23,22 +23,22 @@ def get_config():
     config = get_default_configs()
     # training
     training = config.training
-    training.sde = 'vesde'
+    training.sde = "vesde"
     training.continuous = False
 
     # sampling
     sampling = config.sampling
-    sampling.method = 'pc'
-    sampling.predictor = 'reverse_diffusion'
-    sampling.corrector = 'langevin'
+    sampling.method = "pc"
+    sampling.predictor = "reverse_diffusion"
+    sampling.corrector = "langevin"
 
     # model
     model = config.model
-    model.name = 'ddpm'
+    model.name = "ddpm"
     model.scale_by_sigma = True
     model.ema_rate = 0.999
-    model.normalization = 'GroupNorm'
-    model.nonlinearity = 'swish'
+    model.normalization = "GroupNorm"
+    model.nonlinearity = "swish"
     model.nf = 128
     model.ch_mult = (1, 2, 2, 2)
     model.num_res_blocks = 2

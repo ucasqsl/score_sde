@@ -1,10 +1,8 @@
 """Abstract SDE classes, Reverse SDE, and VE/VP SDEs."""
 import abc
-
-import jax
 import jax.numpy as jnp
+import jax
 import numpy as np
-
 from utils import batch_mul
 
 
@@ -98,15 +96,21 @@ class SDE(abc.ABC):
                 """Create the drift and diffusion functions for the reverse SDE/ODE."""
                 drift, diffusion = sde_fn(x, t)
                 score = score_fn(x, t)
-                drift = drift - batch_mul(diffusion ** 2, score * (0.5 if self.probability_flow else 1.))
+                drift = drift - batch_mul(
+                    diffusion**2, score * (0.5 if self.probability_flow else 1.0)
+                )
                 # Set the diffusion function to zero for ODEs.
-                diffusion = jnp.zeros_like(diffusion) if self.probability_flow else diffusion
+                diffusion = (
+                    jnp.zeros_like(diffusion) if self.probability_flow else diffusion
+                )
                 return drift, diffusion
 
             def discretize(self, x, t):
                 """Create discretized iteration rules for the reverse diffusion sampler."""
                 f, G = discretize_fn(x, t)
-                rev_f = f - batch_mul(G ** 2, score_fn(x, t) * (0.5 if self.probability_flow else 1.))
+                rev_f = f - batch_mul(
+                    G**2, score_fn(x, t) * (0.5 if self.probability_flow else 1.0)
+                )
                 rev_G = jnp.zeros_like(G) if self.probability_flow else G
                 return rev_f, rev_G
 
@@ -127,10 +131,10 @@ class VPSDE(SDE):
         self.beta_1 = beta_max
         self.N = N
         self.discrete_betas = jnp.linspace(beta_min / N, beta_max / N, N)
-        self.alphas = 1. - self.discrete_betas
+        self.alphas = 1.0 - self.discrete_betas
         self.alphas_cumprod = jnp.cumprod(self.alphas, axis=0)
         self.sqrt_alphas_cumprod = jnp.sqrt(self.alphas_cumprod)
-        self.sqrt_1m_alphas_cumprod = jnp.sqrt(1. - self.alphas_cumprod)
+        self.sqrt_1m_alphas_cumprod = jnp.sqrt(1.0 - self.alphas_cumprod)
 
     @property
     def T(self):
@@ -143,9 +147,11 @@ class VPSDE(SDE):
         return drift, diffusion
 
     def marginal_prob(self, x, t):
-        log_mean_coeff = -0.25 * t ** 2 * (self.beta_1 - self.beta_0) - 0.5 * t * self.beta_0
+        log_mean_coeff = (
+            -0.25 * t**2 * (self.beta_1 - self.beta_0) - 0.5 * t * self.beta_0
+        )
         mean = batch_mul(jnp.exp(log_mean_coeff), x)
-        std = jnp.sqrt(1 - jnp.exp(2. * log_mean_coeff))
+        std = jnp.sqrt(1 - jnp.exp(2.0 * log_mean_coeff))
         return mean, std
 
     def prior_sampling(self, rng, shape):
@@ -154,7 +160,10 @@ class VPSDE(SDE):
     def prior_logp(self, z):
         shape = z.shape
         N = np.prod(shape[1:])
-        logp_fn = lambda z: -N / 2. * jnp.log(2 * np.pi) - jnp.sum(z ** 2) / 2.
+
+        def logp_fn(z):
+            return -N / 2.0 * jnp.log(2 * np.pi) - jnp.sum(z**2) / 2.0
+
         return jax.vmap(logp_fn)(z)
 
     def discretize(self, x, t):
@@ -189,14 +198,18 @@ class subVPSDE(SDE):
     def sde(self, x, t):
         beta_t = self.beta_0 + t * (self.beta_1 - self.beta_0)
         drift = -0.5 * batch_mul(beta_t, x)
-        discount = 1. - jnp.exp(-2 * self.beta_0 * t - (self.beta_1 - self.beta_0) * t ** 2)
+        discount = 1.0 - jnp.exp(
+            -2 * self.beta_0 * t - (self.beta_1 - self.beta_0) * t**2
+        )
         diffusion = jnp.sqrt(beta_t * discount)
         return drift, diffusion
 
     def marginal_prob(self, x, t):
-        log_mean_coeff = -0.25 * t ** 2 * (self.beta_1 - self.beta_0) - 0.5 * t * self.beta_0
+        log_mean_coeff = (
+            -0.25 * t**2 * (self.beta_1 - self.beta_0) - 0.5 * t * self.beta_0
+        )
         mean = batch_mul(jnp.exp(log_mean_coeff), x)
-        std = 1 - jnp.exp(2. * log_mean_coeff)
+        std = 1 - jnp.exp(2.0 * log_mean_coeff)
         return mean, std
 
     def prior_sampling(self, rng, shape):
@@ -205,7 +218,10 @@ class subVPSDE(SDE):
     def prior_logp(self, z):
         shape = z.shape
         N = np.prod(shape[1:])
-        logp_fn = lambda z: -N / 2. * jnp.log(2 * np.pi) - jnp.sum(z ** 2) / 2.
+
+        def logp_fn(z):
+            return -N / 2.0 * jnp.log(2 * np.pi) - jnp.sum(z**2) / 2.0
+
         return jax.vmap(logp_fn)(z)
 
 
@@ -221,7 +237,9 @@ class VESDE(SDE):
         super().__init__(N)
         self.sigma_min = sigma_min
         self.sigma_max = sigma_max
-        self.discrete_sigmas = jnp.exp(np.linspace(np.log(self.sigma_min), np.log(self.sigma_max), N))
+        self.discrete_sigmas = jnp.exp(
+            np.linspace(np.log(self.sigma_min), np.log(self.sigma_max), N)
+        )
         self.N = N
 
     @property
@@ -231,7 +249,9 @@ class VESDE(SDE):
     def sde(self, x, t):
         sigma = self.sigma_min * (self.sigma_max / self.sigma_min) ** t
         drift = jnp.zeros_like(x)
-        diffusion = sigma * jnp.sqrt(2 * (jnp.log(self.sigma_max) - jnp.log(self.sigma_min)))
+        diffusion = sigma * jnp.sqrt(
+            2 * (jnp.log(self.sigma_max) - jnp.log(self.sigma_min))
+        )
         return drift, diffusion
 
     def marginal_prob(self, x, t):
@@ -245,15 +265,21 @@ class VESDE(SDE):
     def prior_logp(self, z):
         shape = z.shape
         N = np.prod(shape[1:])
-        logp_fn = lambda z: -N / 2. * jnp.log(2 * np.pi * self.sigma_max ** 2) - jnp.sum(z ** 2) / (
-                    2 * self.sigma_max ** 2)
+
+        def logp_fn(z):
+            return -N / 2.0 * jnp.log(2 * np.pi * self.sigma_max**2) - jnp.sum(
+                z**2
+            ) / (2 * self.sigma_max**2)
+
         return jax.vmap(logp_fn)(z)
 
     def discretize(self, x, t):
         """SMLD(NCSN) discretization."""
         timestep = (t * (self.N - 1) / self.T).astype(jnp.int32)
         sigma = self.discrete_sigmas[timestep]
-        adjacent_sigma = jnp.where(timestep == 0, jnp.zeros_like(timestep), self.discrete_sigmas[timestep - 1])
+        adjacent_sigma = jnp.where(
+            timestep == 0, jnp.zeros_like(timestep), self.discrete_sigmas[timestep - 1]
+        )
         f = jnp.zeros_like(x)
-        G = jnp.sqrt(sigma ** 2 - adjacent_sigma ** 2)
+        G = jnp.sqrt(sigma**2 - adjacent_sigma**2)
         return f, G

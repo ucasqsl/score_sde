@@ -20,11 +20,10 @@ This code is the FLAX equivalent of:
 https://github.com/hojonathanho/diffusion/blob/master/diffusion_tf/models/unet.py
 """
 
-import functools
-
 import flax.linen as nn
 import jax.numpy as jnp
 import ml_collections
+import functools
 
 from . import utils, layers, normalization
 
@@ -39,9 +38,10 @@ get_normalization = normalization.get_normalization
 default_initializer = layers.default_init
 
 
-@utils.register_model(name='ddpm')
+@utils.register_model(name="ddpm")
 class DDPM(nn.Module):
     """DDPM model architecture."""
+
     config: ml_collections.ConfigDict
 
     @nn.compact
@@ -61,7 +61,9 @@ class DDPM(nn.Module):
         num_resolutions = len(ch_mult)
 
         AttnBlock = functools.partial(layers.AttnBlock, normalize=normalize)
-        ResnetBlock = functools.partial(ResnetBlockDDPM, act=act, normalize=normalize, dropout=dropout)
+        ResnetBlock = functools.partial(
+            ResnetBlockDDPM, act=act, normalize=normalize, dropout=dropout
+        )
 
         if config.model.conditional:
             # timestep/scale embedding
@@ -77,7 +79,7 @@ class DDPM(nn.Module):
             h = x
         else:
             # Input is in [0, 1]
-            h = 2 * x - 1.
+            h = 2 * x - 1.0
 
         # Downsampling block
         hs = [conv3x3(h, nf)]
@@ -99,7 +101,9 @@ class DDPM(nn.Module):
         # Upsampling block
         for i_level in reversed(range(num_resolutions)):
             for i_block in range(num_res_blocks + 1):
-                h = ResnetBlock(out_ch=nf * ch_mult[i_level])(jnp.concatenate([h, hs.pop()], axis=-1), temb, train)
+                h = ResnetBlock(out_ch=nf * ch_mult[i_level])(
+                    jnp.concatenate([h, hs.pop()], axis=-1), temb, train
+                )
             if h.shape[1] in attn_resolutions:
                 h = AttnBlock()(h)
             if i_level != 0:
@@ -108,14 +112,15 @@ class DDPM(nn.Module):
         assert not hs
 
         h = act(normalize()(h))
-        h = conv3x3(h, x.shape[-1], init_scale=0.)
+        h = conv3x3(h, x.shape[-1], init_scale=0.0)
 
         if config.model.scale_by_sigma:
             # Divide the output by sigmas. Useful for training with the NCSN loss.
             # The DDPM loss scales the network output by sigma in the loss function,
             # so no need of doing it here.
-            used_sigmas = sigmas[labels].reshape((x.shape[0],
-                                                  *([1] * len(x.shape[1:]))))
+            used_sigmas = sigmas[labels].reshape(
+                (x.shape[0], *([1] * len(x.shape[1:])))
+            )
             h = h / used_sigmas
 
         return h

@@ -35,11 +35,11 @@ def get_default_configs():
     evaluate.num_samples = 50000
     evaluate.enable_loss = True
     evaluate.enable_bpd = False
-    evaluate.bpd_dataset = 'test'
+    evaluate.bpd_dataset = "test"
 
     # data
     config.data = data = ml_collections.ConfigDict()
-    data.dataset = 'LSUN'
+    data.dataset = "LSUN"
     data.image_size = 256
     data.random_flip = True
     data.uniform_dequantization = False
@@ -52,19 +52,19 @@ def get_default_configs():
     model.sigma_min = 0.01
     model.num_scales = 2000
     model.beta_min = 0.1
-    model.beta_max = 20.
-    model.dropout = 0.
-    model.embedding_type = 'fourier'
+    model.beta_max = 20.0
+    model.dropout = 0.0
+    model.embedding_type = "fourier"
 
     # optimization
     config.optim = optim = ml_collections.ConfigDict()
     optim.weight_decay = 0
-    optim.optimizer = 'Adam'
+    optim.optimizer = "Adam"
     optim.lr = 2e-4
     optim.beta1 = 0.9
     optim.eps = 1e-8
     optim.warmup = 5000
-    optim.grad_clip = 1.
+    optim.grad_clip = 1.0
 
     config.seed = 42
 
